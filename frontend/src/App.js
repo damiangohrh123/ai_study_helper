@@ -8,6 +8,33 @@ function App() {
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [image, setImage] = useState(null);
+  const [imageUploading, setImageUploading] = useState(false);
+  const handleImageChange = (e) => {
+    if (e.target.files && e.target.files[0]) {
+      setImage(e.target.files[0]);
+    }
+  };
+
+  const handleImageUpload = async () => {
+    if (!image) return;
+    setImageUploading(true);
+    setMessages(msgs => [...msgs, { sender: 'user', text: '[Image uploaded: ' + image.name + ']' }]);
+    const formData = new FormData();
+    formData.append('file', image);
+    try {
+      const res = await fetch('http://localhost:8000/upload-image', {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      setMessages(msgs => [...msgs, { sender: 'ai', text: `Image received: ${data.filename}. ${data.text}` }]);
+    } catch (err) {
+      setMessages(msgs => [...msgs, { sender: 'ai', text: 'Error: Could not upload image.' }]);
+    }
+    setImage(null);
+    setImageUploading(false);
+  };
 
   const handleSend = async () => {
     if (!input.trim()) return;
@@ -46,7 +73,7 @@ function App() {
         ))}
         {loading && <div style={{ color: '#888' }}>AI is typing...</div>}
       </div>
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
         <input
           type="text"
           value={input}
@@ -59,6 +86,22 @@ function App() {
         <button onClick={handleSend} disabled={loading || !input.trim()} style={{ padding: '8px 16px' }}>
           Send
         </button>
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <input
+          type="file"
+          accept="image/*"
+          onChange={handleImageChange}
+          disabled={imageUploading}
+        />
+        <button
+          onClick={handleImageUpload}
+          disabled={imageUploading || !image}
+          style={{ padding: '8px 16px' }}
+        >
+          {imageUploading ? 'Uploading...' : 'Upload Image'}
+        </button>
+        {image && <span style={{ fontSize: 12 }}>{image.name}</span>}
       </div>
     </div>
   );
