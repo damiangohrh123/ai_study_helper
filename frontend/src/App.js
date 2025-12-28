@@ -16,45 +16,45 @@ function App() {
     }
   };
 
-  const handleImageUpload = async () => {
-    if (!image) return;
+
+  // Unified send handler for both text and image
+  const handleSend = async () => {
+    if (!input.trim() && !image) return;
+    let userMsg = null;
+    if (input.trim() && image) {
+      userMsg = { sender: 'user', text: input + ' [Image attached: ' + image.name + ']' };
+    } else if (input.trim()) {
+      userMsg = { sender: 'user', text: input };
+    } else if (image) {
+      userMsg = { sender: 'user', text: '[Image attached: ' + image.name + ']' };
+    }
+    if (userMsg) setMessages(msgs => [...msgs, userMsg]);
+    setLoading(true);
     setImageUploading(true);
-    setMessages(msgs => [...msgs, { sender: 'user', text: '[Image uploaded: ' + image.name + ']' }]);
-    const formData = new FormData();
-    formData.append('file', image);
+    setInput('');
     try {
-      const res = await fetch('http://localhost:8000/upload-image', {
+      const formData = new FormData();
+      if (input.trim()) formData.append('message', input);
+      if (image) formData.append('file', image);
+      const res = await fetch('http://localhost:8000/ask', {
         method: 'POST',
         body: formData
       });
       const data = await res.json();
-      setMessages(msgs => [...msgs, { sender: 'ai', text: `Image received: ${data.filename}. ${data.text}` }]);
-    } catch (err) {
-      setMessages(msgs => [...msgs, { sender: 'ai', text: 'Error: Could not upload image.' }]);
-    }
-    setImage(null);
-    setImageUploading(false);
-  };
-
-  const handleSend = async () => {
-    if (!input.trim()) return;
-    const userMsg = { sender: 'user', text: input };
-    setMessages(msgs => [...msgs, userMsg]);
-    setLoading(true);
-    setInput('');
-    try {
-      const res = await fetch('http://localhost:8000/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: input })
-      });
-      const data = await res.json();
-      setMessages(msgs => [...msgs, { sender: 'ai', text: data.response }]);
+      if (data.response) {
+        setMessages(msgs => [...msgs, { sender: 'ai', text: data.response }]);
+      } else {
+        setMessages(msgs => [...msgs, { sender: 'ai', text: data.error || 'Error: No response from server.' }]);
+      }
     } catch (err) {
       setMessages(msgs => [...msgs, { sender: 'ai', text: 'Error: Could not reach server.' }]);
     }
+    setImage(null);
     setLoading(false);
+    setImageUploading(false);
   };
+
+
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') handleSend();
@@ -83,25 +83,16 @@ function App() {
           style={{ flex: 1, padding: 8, borderRadius: 4, border: '1px solid #ccc' }}
           disabled={loading}
         />
-        <button onClick={handleSend} disabled={loading || !input.trim()} style={{ padding: '8px 16px' }}>
-          Send
-        </button>
-      </div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <input
           type="file"
           accept="image/*"
           onChange={handleImageChange}
           disabled={imageUploading}
         />
-        <button
-          onClick={handleImageUpload}
-          disabled={imageUploading || !image}
-          style={{ padding: '8px 16px' }}
-        >
-          {imageUploading ? 'Uploading...' : 'Upload Image'}
-        </button>
         {image && <span style={{ fontSize: 12 }}>{image.name}</span>}
+        <button onClick={handleSend} disabled={loading || imageUploading || (!input.trim() && !image)} style={{ padding: '8px 16px' }}>
+          {loading || imageUploading ? 'Sending...' : 'Send'}
+        </button>
       </div>
     </div>
   );

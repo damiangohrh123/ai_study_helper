@@ -1,6 +1,13 @@
-from fastapi import FastAPI, UploadFile, File
+
+import os
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
 
 app = FastAPI()
 
@@ -13,15 +20,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class ChatRequest(BaseModel):
-    message: str
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-@app.post("/chat")
-def chat_endpoint(request: ChatRequest):
-    # Placeholder: Echoes the message
-    return {"response": f"You said: {request.message}"}
+llm = ChatOpenAI(
+    model="gpt-4o",  # Use "gpt-4o" for vision and text
+    openai_api_key=OPENAI_API_KEY
+)
 
-@app.post("/upload-image")
-def upload_image(file: UploadFile = File(...)):
-    # Placeholder: Accepts image, returns filename
-    return {"filename": file.filename, "text": "(OCR not implemented)"}
+@app.post("/ask")
+async def ask(
+    message: str = Form(None),
+    file: UploadFile = File(None)
+):
+    """
+    Unified endpoint for text and/or image input. Sends both to GPT-4o via LangChain.
+    """
+    content = []
+    if message:
+        content.append(HumanMessage(content=message))
+    if file:
+        image_bytes = await file.read()
+        # LangChain expects images as dict: {"type": "image_url", "image_url": "data:image/png;base64,..."}
+        import base64
+        b64 = base64.b64encode(image_bytes).decode()
+        mime = file.content_type or "image/png"
+        image_dict = {"type": "image_url", "image_url": f"data:{mime};base64,{b64}"}
+        content.append(HumanMessage(content=[image_dict]))
+    if not content:
+        return JSONResponse({"error": "No input provided."}, status_code=400)
+    try:
+        response = llm.invoke(content)
+        return {"response": response.content}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
