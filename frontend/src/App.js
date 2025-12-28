@@ -3,6 +3,16 @@ import React, { useState } from 'react';
 import './App.css';
 
 function App() {
+  // Generate a persistent session_id for this user (per browser tab)
+  const getSessionId = () => {
+    let id = window.localStorage.getItem('ai_study_helper_session_id');
+    if (!id) {
+      id = 'sess-' + Math.random().toString(36).slice(2) + Date.now();
+      window.localStorage.setItem('ai_study_helper_session_id', id);
+    }
+    return id;
+  };
+  const sessionId = getSessionId();
   const [messages, setMessages] = useState([
     { sender: 'ai', text: 'Hello! How can I help you study today?' }
   ]);
@@ -36,6 +46,7 @@ function App() {
       const formData = new FormData();
       if (input.trim()) formData.append('message', input);
       if (image) formData.append('file', image);
+      formData.append('session_id', sessionId);
       const res = await fetch('http://localhost:8000/ask', {
         method: 'POST',
         body: formData
