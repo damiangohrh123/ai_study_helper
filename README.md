@@ -10,11 +10,16 @@ This is a full-stack project skeleton for a personalized AI Study Helper.
 ### Backend (FastAPI)
 1. Go to the `backend` folder:
 
-2. Install FastAPI and Uvicorn:
+2. Activate python environment:
+```
+conda activate pytorch_env
+```
+
+3. Install FastAPI and Uvicorn:
    ```
    pip install fastapi uvicorn
    ```
-3. Run the server:
+4. Run the server:
    ```
    uvicorn main:app --reload
    ```
