@@ -1,8 +1,11 @@
 
 import React, { useState } from 'react';
 import './App.css';
+import { GoogleLogin } from '@react-oauth/google';
 
 function App() {
+  const [jwt, setJwt] = useState(() => localStorage.getItem('ai_study_helper_jwt') || null);
+  const [showLogin, setShowLogin] = useState(!jwt);
   // Generate a persistent session_id for this user (per browser tab)
   const getSessionId = () => {
     let id = window.localStorage.getItem('ai_study_helper_session_id');
@@ -71,6 +74,38 @@ function App() {
     if (e.key === 'Enter') handleSend();
   };
 
+  if (showLogin) {
+    return (
+      <div className="App" style={{ maxWidth: 400, margin: '40px auto', padding: 20 }}>
+        <h2>AI Study Helper Login</h2>
+        <div style={{ margin: '32px 0' }}>
+          <GoogleLogin
+            onSuccess={async credentialResponse => {
+              const idToken = credentialResponse.credential;
+              const res = await fetch('http://localhost:8000/google-login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token: idToken })
+              });
+              const data = await res.json();
+              if (data.access_token) {
+                localStorage.setItem('ai_study_helper_jwt', data.access_token);
+                setJwt(data.access_token);
+                setShowLogin(false);
+              } else {
+                alert('Google login failed: ' + (data.detail || data.msg || 'Unknown error'));
+              }
+            }}
+            onError={() => {
+              alert('Google login failed');
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // Chat UI (shown after login)
   return (
     <div className="App" style={{ maxWidth: 500, margin: '40px auto', padding: 20 }}>
       <h2>AI Study Helper</h2>
