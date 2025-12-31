@@ -11,8 +11,14 @@ POSTGRES_HOST = os.getenv("POSTGRES_HOST")
 POSTGRES_PORT = os.getenv("POSTGRES_PORT")
 POSTGRES_DB = os.getenv("POSTGRES_DB")
 
+# Build the database URL
 DATABASE_URL = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 
-engine = create_async_engine(DATABASE_URL, echo=True)
+# Create the async engine (connection manager to run DB)
+engine = create_async_engine(DATABASE_URL, echo=False)
+
+# Creates session factory (to open DB workspaces)
 SessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+# Base class for all SQLAlchemy models
 Base = declarative_base()
