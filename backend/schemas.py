@@ -10,3 +10,14 @@ class Token(BaseModel):
 
 class GoogleLoginRequest(BaseModel):
     token: str
+
+class ChatSessionCreate(BaseModel):
+    title: str | None = None
+
+class ChatSessionOut(BaseModel):
+    id: int
+    title: str
+    created_at: str
+
+    class Config:
+        orm_mode = True

@@ -8,7 +8,8 @@ from fastapi.responses import JSONResponse
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 
-from models import User, ChatHistory
+from models import User, ChatHistory, ChatSession
+from schemas import ChatSessionCreate, ChatSessionOut
 from deps import get_db
 from auth import get_current_user
 
@@ -24,6 +25,34 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 # Load API key and initialize LLM client
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 llm = ChatOpenAI(model="gpt-4o", openai_api_key=OPENAI_API_KEY)
+
+# Endpoint to create a new chat session
+@router.post("/sessions", response_model=ChatSessionOut)
+async def create_chat_session(
+	session: ChatSessionCreate,
+	db: AsyncSession = Depends(get_db),
+	current_user: User = Depends(get_current_user)
+):
+	new_session = ChatSession(
+		user_id=current_user.id,
+		title=session.title or "New Chat"
+	)
+	db.add(new_session)
+	await db.commit()
+	await db.refresh(new_session)
+	return new_session
+
+# Endpoint to list all chat sessions for the user
+@router.get("/sessions", response_model=list[ChatSessionOut])
+async def list_chat_sessions(
+	db: AsyncSession = Depends(get_db),
+	current_user: User = Depends(get_current_user)
+):
+	result = await db.execute(
+		select(ChatSession).where(ChatSession.user_id == current_user.id).order_by(ChatSession.created_at.desc())
+	)
+	sessions = result.scalars().all()
+	return sessions
 
 @router.get("/history")
 async def get_chat_history(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
