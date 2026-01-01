@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from datetime import datetime
 
 class UserCreate(BaseModel):
     email: str
@@ -17,7 +18,7 @@ class ChatSessionCreate(BaseModel):
 class ChatSessionOut(BaseModel):
     id: int
     title: str
-    created_at: str
+    created_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True

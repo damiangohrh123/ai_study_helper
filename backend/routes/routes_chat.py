@@ -1,7 +1,7 @@
 import os
 import logging
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from fastapi.responses import JSONResponse
@@ -55,10 +55,16 @@ async def list_chat_sessions(
 	return sessions
 
 @router.get("/history")
-async def get_chat_history(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-	result = await db.execute(
-		select(ChatHistory).where(ChatHistory.user_id == current_user.id).order_by(ChatHistory.timestamp.asc())
-	)
+async def get_chat_history(
+	session_id: int = Query(None),
+	current_user: User = Depends(get_current_user),
+	db: AsyncSession = Depends(get_db)
+):
+	query = select(ChatHistory).where(ChatHistory.user_id == current_user.id)
+	if session_id is not None:
+		query = query.where(ChatHistory.chat_session_id == session_id)
+	query = query.order_by(ChatHistory.timestamp.asc())
+	result = await db.execute(query)
 	history = result.scalars().all()
 	return [
 		{
@@ -73,6 +79,7 @@ async def get_chat_history(current_user: User = Depends(get_current_user), db: A
 async def ask(
 	message: str = Form(None),
 	file: UploadFile = File(None),
+	session_id: int = Form(None),
 	db: AsyncSession = Depends(get_db),
 	current_user: User = Depends(get_current_user)
 ):
@@ -82,15 +89,17 @@ async def ask(
 	user.last_active = datetime.utcnow()
 	await db.commit()
 
-	result = await db.execute(
-		select(ChatHistory).where(ChatHistory.user_id == user.id).order_by(ChatHistory.timestamp.desc()).limit(10)
-	)
+	query = select(ChatHistory).where(ChatHistory.user_id == user.id)
+	if session_id is not None:
+		query = query.where(ChatHistory.chat_session_id == session_id)
+	query = query.order_by(ChatHistory.timestamp.desc()).limit(10)
+	result = await db.execute(query)
 	history_rows = result.scalars().all()[::-1]
 	content = [HumanMessage(content=row.message) for row in history_rows]
 
 	if message:
 		content.append(HumanMessage(content=message))
-		db.add(ChatHistory(user_id=user.id, message=message, sender='user'))
+		db.add(ChatHistory(user_id=user.id, chat_session_id=session_id, message=message, sender='user'))
 	if file:
 		image_bytes = await file.read()
 		import base64
@@ -98,12 +107,12 @@ async def ask(
 		mime = file.content_type or "image/png"
 		image_dict = {"type": "image_url", "image_url": f"data:{mime};base64,{b64}"}
 		content.append(HumanMessage(content=[image_dict]))
-		db.add(ChatHistory(user_id=user.id, message=f"[Image uploaded: {file.filename}]", sender='user'))
+		db.add(ChatHistory(user_id=user.id, chat_session_id=session_id, message=f"[Image uploaded: {file.filename}]", sender='user'))
 	if not (message or file):
 		return JSONResponse({"error": "No input provided."}, status_code=400)
 	try:
 		response = llm.invoke(content)
-		db.add(ChatHistory(user_id=user.id, message=response.content, sender='ai'))
+		db.add(ChatHistory(user_id=user.id, chat_session_id=session_id, message=response.content, sender='ai'))
 		await db.commit()
 		return {"response": response.content}
 	except Exception as e:
