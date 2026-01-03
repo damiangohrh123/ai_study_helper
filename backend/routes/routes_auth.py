@@ -62,16 +62,30 @@ async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(g
 	result = await db.execute(select(User).where(User.google_id == google_id_val))
 	user = result.scalars().first()
 
-	# If user does not exist, create a new account (auto-registration)
 	if not user:
-		user = User(email=email, google_id=google_id_val)
-		db.add(user)
-		try:
-			await db.commit()
-			await db.refresh(user)
-		except IntegrityError:
-			await db.rollback()
-			raise HTTPException(status_code=400, detail="Google registration failed")
+		# Try to find user by email
+		result_email = await db.execute(select(User).where(User.email == email))
+		user_by_email = result_email.scalars().first()
+		if user_by_email:
+			# Attach google_id to existing user
+			user_by_email.google_id = google_id_val
+			try:
+				await db.commit()
+				await db.refresh(user_by_email)
+			except IntegrityError:
+				await db.rollback()
+				raise HTTPException(status_code=400, detail="Google registration failed (attach google_id)")
+			user = user_by_email
+		else:
+			# Create new user
+			user = User(email=email, google_id=google_id_val)
+			db.add(user)
+			try:
+				await db.commit()
+				await db.refresh(user)
+			except IntegrityError:
+				await db.rollback()
+				raise HTTPException(status_code=400, detail="Google registration failed (new user)")
 
 	# Create an access token (JWT) for the user
 	token = create_access_token({"sub": str(user.id)})
