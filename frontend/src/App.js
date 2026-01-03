@@ -17,12 +17,34 @@ function App() {
   const [image, setImage] = useState(null);
   const [imageUploading, setImageUploading] = useState(false);
 
+  // Helper to fetch with auto-refresh
+  async function fetchWithAuth(url, options, setJwt) {
+    let jwt = localStorage.getItem('ai_study_helper_jwt');
+    options = options || {};
+    options.headers = options.headers || {};
+    if (jwt) options.headers['Authorization'] = `Bearer ${jwt}`;
+    let res = await fetch(url, options);
+    if (res.status === 401) {
+      // Try to refresh token
+      const refreshRes = await fetch('http://localhost:8000/auth/refresh', { method: 'POST', credentials: 'include' });
+      if (refreshRes.ok) {
+        const data = await refreshRes.json();
+        if (data.access_token) {
+          localStorage.setItem('ai_study_helper_jwt', data.access_token);
+          setJwt(data.access_token);
+          // Retry original request with new token
+          options.headers['Authorization'] = `Bearer ${data.access_token}`;
+          res = await fetch(url, options);
+        }
+      }
+    }
+    return res;
+  }
+
   // Fetch chat sessions after login
   React.useEffect(() => {
     if (!showLogin && jwt) {
-      fetch('http://localhost:8000/chat/sessions', {
-        headers: { 'Authorization': `Bearer ${jwt}` }
-      })
+      fetchWithAuth('http://localhost:8000/chat/sessions', {}, setJwt)
         .then(res => res.json())
         .then(data => {
           setSessions(data);
@@ -36,9 +58,7 @@ function App() {
   // Fetch chat history for selected session
   React.useEffect(() => {
     if (!showLogin && jwt && selectedSession) {
-      fetch(`http://localhost:8000/chat/history?session_id=${selectedSession}`, {
-        headers: { 'Authorization': `Bearer ${jwt}` }
-      })
+      fetchWithAuth(`http://localhost:8000/chat/history?session_id=${selectedSession}`, {}, setJwt)
         .then(res => res.json())
         .then(data => {
           if (Array.isArray(data) && data.length > 0) {
@@ -79,11 +99,11 @@ function App() {
       if (image) formData.append('file', image);
       if (selectedSession) formData.append('session_id', selectedSession);
       const headers = jwt ? { 'Authorization': `Bearer ${jwt}` } : {};
-      const res = await fetch('http://localhost:8000/chat/ask', {
+      const res = await fetchWithAuth('http://localhost:8000/chat/ask', {
         method: 'POST',
         body: formData,
         headers
-      });
+      }, setJwt);
       const data = await res.json();
       if (data.response) {
         setMessages(msgs => [...msgs, { sender: 'ai', text: data.response }]);

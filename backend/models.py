@@ -13,6 +13,7 @@ class User(Base):
     google_id = Column(String, unique=True, index=True, nullable=True)          # Google OAuth ID
     created_at = Column(DateTime, default=datetime.utcnow)                      # account creation timestamp
     last_active = Column(DateTime, default=datetime.utcnow)                     # last active timestamp
+    refresh_token = Column(String, nullable=True)                               # refresh token for session management
 
     chats = relationship("ChatHistory", back_populates="user")                  # user's chat history
     chat_sessions = relationship("ChatSession", back_populates="user")          # user's chat sessions    
