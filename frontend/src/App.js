@@ -123,9 +123,9 @@ function App() {
 
   if (!jwt) {
     return (
-      <div className="App" style={{ maxWidth: 400, margin: '40px auto', padding: 20 }}>
+      <div className="App login-container">
         <h2>AI Study Helper Login</h2>
-        <div style={{ margin: '32px 0' }}>
+        <div className="login-google">
           <GoogleLogin
             onSuccess={async credentialResponse => {
               const idToken = credentialResponse.credential;
@@ -147,7 +147,7 @@ function App() {
             }}
           />
         </div>
-        <div style={{ color: '#888', fontSize: 14, marginTop: 24 }}>
+        <div className="login-note">
           <p>Only registered users can use the app. Please sign in with Google to continue.</p>
         </div>
       </div>
@@ -161,24 +161,15 @@ function App() {
     setMessages([]);
   };
   return (
-    <div className="App" style={{ display: 'flex', maxWidth: 900, margin: '40px auto', padding: 20 }}>
+    <div className="App app-main">
       {/* Always show sidebar */}
-      <div style={{ width: 220, marginRight: 24, borderRight: '1px solid #eee', paddingRight: 16 }}>
-        <h3 style={{ marginTop: 0 }}>Chats</h3>
-        <ul style={{ listStyle: 'none', padding: 0 }}>
+      <div className="sidebar">
+        <h3 className="sidebar-title">Chats</h3>
+        <ul className="sidebar-list">
           {sessions.map(session => (
-            <li key={session.id} style={{ marginBottom: 8 }}>
+            <li key={session.id} className="sidebar-list-item">
               <button
-                style={{
-                  width: '100%',
-                  textAlign: 'left',
-                  background: selectedSession === session.id ? '#e6f7e6' : '#fff',
-                  border: '1px solid #ccc',
-                  borderRadius: 6,
-                  padding: '8px 10px',
-                  cursor: 'pointer',
-                  fontWeight: selectedSession === session.id ? 'bold' : 'normal'
-                }}
+                className={`sidebar-chat-btn${selectedSession === session.id ? ' selected' : ''}`}
                 onClick={() => setSelectedSession(session.id)}
               >
                 {session.title || 'New Chat'}
@@ -187,7 +178,7 @@ function App() {
           ))}
         </ul>
         <button
-          style={{ width: '100%', marginTop: 12, padding: '8px 0', borderRadius: 6, background: '#f4f6fb', border: '1px solid #ccc' }}
+          className="sidebar-newchat-btn"
           onClick={async () => {
             const title = prompt('Enter a title for the new chat:') || 'New Chat';
             const res = await fetch('http://localhost:8000/chat/sessions', {
@@ -204,26 +195,16 @@ function App() {
         >+ New Chat</button>
       </div>
       {/* Main chat area */}
-      <div style={{ flex: 1 }}>
-        <h2>AI Study Helper</h2>
-        <button onClick={handleLogout} style={{ float: 'right', marginBottom: 8 }}>Logout</button>
-        <div style={{ border: '1px solid #ccc', borderRadius: 8, padding: 16, minHeight: 200, background: '#fafafa', marginBottom: 16 }}>
+      <div className="chat-main">
+        <h2 className="chat-title">AI Study Helper</h2>
+        <button onClick={handleLogout} className="logout-btn">Logout</button>
+        <div className="chat-history">
           {messages.map((msg, idx) => (
             <div
               key={idx}
-              style={{
-                textAlign: msg.sender === 'user' ? 'right' : 'left',
-                margin: '8px 0',
-                background: msg.sender === 'ai' ? '#f4f6fb' : '#e6f7e6',
-                borderRadius: 8,
-                padding: 12,
-                maxWidth: '90%',
-                marginLeft: msg.sender === 'ai' ? 0 : 'auto',
-                marginRight: msg.sender === 'user' ? 0 : 'auto',
-                boxShadow: '0 1px 3px rgba(0,0,0,0.04)'
-              }}
+              className={`chat-message${msg.sender === 'user' ? ' user' : ' ai'}`}
             >
-              <span style={{ fontWeight: msg.sender === 'user' ? 'bold' : 'normal', color: '#555' }}>
+              <span className={`chat-message-label${msg.sender === 'user' ? ' user' : ' ai'}`}> 
                 {msg.sender === 'user' ? 'You' : 'AI'}:
               </span>{' '}
               {msg.sender === 'ai' ? (
@@ -238,26 +219,27 @@ function App() {
               )}
             </div>
           ))}
-          {loading && <div style={{ color: '#888' }}>AI is typing...</div>}
+          {loading && <div className="chat-typing">AI is typing...</div>}
         </div>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+        <div className="chat-input-row">
           <input
             type="text"
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Type your question..."
-            style={{ flex: 1, padding: 8, borderRadius: 4, border: '1px solid #ccc' }}
+            className="chat-input"
             disabled={loading}
           />
           <input
             type="file"
             accept="image/*"
             onChange={handleImageChange}
+            className="chat-file-input"
             disabled={imageUploading}
           />
-          {image && <span style={{ fontSize: 12 }}>{image.name}</span>}
-          <button onClick={handleSend} disabled={loading || imageUploading || (!input.trim() && !image)} style={{ padding: '8px 16px' }}>
+          {image && <span className="chat-image-name">{image.name}</span>}
+          <button onClick={handleSend} disabled={loading || imageUploading || (!input.trim() && !image)} className="chat-send-btn">
             {loading || imageUploading ? 'Sending...' : 'Send'}
           </button>
         </div>

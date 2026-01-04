@@ -1,3 +1,131 @@
+.login-container {
+  max-width: 400px;
+  margin: 40px auto;
+  padding: 20px;
+}
+
+.login-google {
+  margin: 32px 0;
+}
+
+.login-note {
+  color: #888;
+  font-size: 14px;
+  margin-top: 24px;
+}
+
+.app-main {
+  display: flex;
+  max-width: 900px;
+  margin: 40px auto;
+  padding: 20px;
+}
+
+.sidebar {
+  width: 220px;
+  margin-right: 24px;
+  border-right: 1px solid #eee;
+  padding-right: 16px;
+}
+.sidebar-title {
+  margin-top: 0;
+}
+.sidebar-list {
+  list-style: none;
+  padding: 0;
+}
+.sidebar-list-item {
+  margin-bottom: 8px;
+}
+.sidebar-chat-btn {
+  width: 100%;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-weight: normal;
+}
+.sidebar-chat-btn.selected {
+  background: #e6f7e6;
+  font-weight: bold;
+}
+.sidebar-newchat-btn {
+  width: 100%;
+  margin-top: 12px;
+  padding: 8px 0;
+  border-radius: 6px;
+  background: #f4f6fb;
+  border: 1px solid #ccc;
+}
+
+.chat-main {
+  flex: 1;
+}
+.chat-title {
+  margin-bottom: 0;
+}
+.logout-btn {
+  float: right;
+  margin-bottom: 8px;
+}
+.chat-history {
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  padding: 16px;
+  min-height: 200px;
+  background: #fafafa;
+  margin-bottom: 16px;
+}
+.chat-message {
+  margin: 8px 0;
+  border-radius: 8px;
+  padding: 12px;
+  max-width: 90%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.chat-message.user {
+  text-align: right;
+  margin-left: auto;
+  background: #e6f7e6;
+}
+.chat-message.ai {
+  text-align: left;
+  margin-right: auto;
+  background: #f4f6fb;
+}
+.chat-message-label {
+  color: #555;
+}
+.chat-message-label.user {
+  font-weight: bold;
+}
+.chat-message-label.ai {
+  font-weight: normal;
+}
+.chat-typing {
+  color: #888;
+}
+.chat-input-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.chat-input {
+  flex: 1;
+  padding: 8px;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+}
+.chat-file-input {
+}
+.chat-image-name {
+  font-size: 12px;
+}
+.chat-send-btn {
+  padding: 8px 16px;
+}
 .App {
   text-align: center;
 }
