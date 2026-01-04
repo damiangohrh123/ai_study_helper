@@ -1,6 +1,6 @@
-from fastapi import Request
 import os
-from fastapi import APIRouter, Depends, HTTPException, Response
+import secrets
+from fastapi import APIRouter, Depends, HTTPException, Response, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -10,8 +10,7 @@ from google.auth.exceptions import GoogleAuthError
 from models import User
 from schemas import UserCreate, Token, GoogleLoginRequest
 from deps import get_db
-from auth import (verify_password, get_password_hash, create_access_token)
-import secrets
+from auth import get_password_hash, create_access_token
 from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
@@ -21,6 +20,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # Register a new user
 @router.post("/register", response_model=Token)
 async def register(user: UserCreate, db: AsyncSession = Depends(get_db), response: Response = None):
+	# Check if email is already registered
 	result = await db.execute(select(User).where(User.email == user.email))
 	if result.scalars().first():
 		raise HTTPException(status_code=400, detail="Email already registered")
@@ -28,7 +28,6 @@ async def register(user: UserCreate, db: AsyncSession = Depends(get_db), respons
 	refresh_token = secrets.token_urlsafe(32)
 	new_user = User(email=user.email, password_hash=get_password_hash(user.password), refresh_token=refresh_token)
 	db.add(new_user)
-
 	try:
 		await db.commit()
 		await db.refresh(new_user)
@@ -55,7 +54,7 @@ async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(g
 	GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 	if not GOOGLE_CLIENT_ID:
 		raise RuntimeError("GOOGLE_CLIENT_ID not configured")
-	
+
 	# Verify the Google OAuth2 token sent by the client
 	try:
 		idinfo = id_token.verify_oauth2_token(

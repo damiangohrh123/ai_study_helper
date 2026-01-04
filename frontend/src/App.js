@@ -8,7 +8,6 @@ import 'katex/dist/katex.min.css';
 
 function App() {
   const [jwt, setJwt] = useState(() => localStorage.getItem('ai_study_helper_jwt') || null);
-  const [showLogin, setShowLogin] = useState(!jwt);
   const [sessions, setSessions] = useState([]);
   const [selectedSession, setSelectedSession] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -43,7 +42,7 @@ function App() {
 
   // Fetch chat sessions after login
   React.useEffect(() => {
-    if (!showLogin && jwt) {
+    if (jwt) {
       fetchWithAuth('http://localhost:8000/chat/sessions', {}, setJwt)
         .then(res => res.json())
         .then(data => {
@@ -53,11 +52,11 @@ function App() {
           }
         });
     }
-  }, [showLogin, jwt]);
+  }, [jwt]);
 
   // Fetch chat history for selected session
   React.useEffect(() => {
-    if (!showLogin && jwt && selectedSession) {
+    if (jwt && selectedSession) {
       fetchWithAuth(`http://localhost:8000/chat/history?session_id=${selectedSession}`, {}, setJwt)
         .then(res => res.json())
         .then(data => {
@@ -71,7 +70,7 @@ function App() {
           setMessages([{ sender: 'ai', text: 'Hello! How can I help you study today?' }]);
         });
     }
-  }, [showLogin, jwt, selectedSession]);
+  }, [jwt, selectedSession]);
   const handleImageChange = (e) => {
     if (e.target.files && e.target.files[0]) {
       setImage(e.target.files[0]);
@@ -97,7 +96,7 @@ function App() {
       const formData = new FormData();
       if (input.trim()) formData.append('message', input);
       if (image) formData.append('file', image);
-      if (selectedSession) formData.append('session_id', selectedSession);
+      if (jwt && selectedSession) formData.append('session_id', selectedSession);
       const headers = jwt ? { 'Authorization': `Bearer ${jwt}` } : {};
       const res = await fetchWithAuth('http://localhost:8000/chat/ask', {
         method: 'POST',
@@ -122,7 +121,7 @@ function App() {
     if (e.key === 'Enter') handleSend();
   };
 
-  if (showLogin) {
+  if (!jwt) {
     return (
       <div className="App" style={{ maxWidth: 400, margin: '40px auto', padding: 20 }}>
         <h2>AI Study Helper Login</h2>
@@ -139,7 +138,6 @@ function App() {
               if (data.access_token) {
                 localStorage.setItem('ai_study_helper_jwt', data.access_token);
                 setJwt(data.access_token);
-                setShowLogin(false);
               } else {
                 alert('Google login failed: ' + (data.detail || data.msg || 'Unknown error'));
               }
@@ -149,6 +147,9 @@ function App() {
             }}
           />
         </div>
+        <div style={{ color: '#888', fontSize: 14, marginTop: 24 }}>
+          <p>Only registered users can use the app. Please sign in with Google to continue.</p>
+        </div>
       </div>
     );
   }
@@ -157,12 +158,11 @@ function App() {
   const handleLogout = () => {
     localStorage.clear();
     setJwt(null);
-    setShowLogin(true);
     setMessages([]);
   };
   return (
     <div className="App" style={{ display: 'flex', maxWidth: 900, margin: '40px auto', padding: 20 }}>
-      {/* Sidebar for chat sessions */}
+      {/* Always show sidebar */}
       <div style={{ width: 220, marginRight: 24, borderRight: '1px solid #eee', paddingRight: 16 }}>
         <h3 style={{ marginTop: 0 }}>Chats</h3>
         <ul style={{ listStyle: 'none', padding: 0 }}>

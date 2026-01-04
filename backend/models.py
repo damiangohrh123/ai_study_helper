@@ -7,7 +7,6 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)                          # unique user ID
-    session_id = Column(String, unique=True, index=True, nullable=True)         # session ID for anonymous users
     email = Column(String, unique=True, index=True, nullable=True)              # user's email address
     password_hash = Column(String, nullable=True)                               # hashed password for authentication
     google_id = Column(String, unique=True, index=True, nullable=True)          # Google OAuth ID

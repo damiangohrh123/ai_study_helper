@@ -83,23 +83,22 @@ async def ask(
 	db: AsyncSession = Depends(get_db),
 	current_user: User = Depends(get_current_user)
 ):
-	# Only allow authenticated users
-	user = current_user
+	# Require authentication for all chat endpoints
+	if not current_user:
+		raise HTTPException(status_code=401, detail="Authentication required.")
 	from datetime import datetime
-	user.last_active = datetime.utcnow()
+	current_user.last_active = datetime.utcnow()
 	await db.commit()
-
-	query = select(ChatHistory).where(ChatHistory.user_id == user.id)
+	content = []
+	query = select(ChatHistory).where(ChatHistory.user_id == current_user.id)
 	if session_id is not None:
 		query = query.where(ChatHistory.chat_session_id == session_id)
 	query = query.order_by(ChatHistory.timestamp.desc()).limit(10)
 	result = await db.execute(query)
 	history_rows = result.scalars().all()[::-1]
 	content = [HumanMessage(content=row.message) for row in history_rows]
-
 	if message:
 		content.append(HumanMessage(content=message))
-		db.add(ChatHistory(user_id=user.id, chat_session_id=session_id, message=message, sender='user'))
 	if file:
 		image_bytes = await file.read()
 		import base64
@@ -107,15 +106,17 @@ async def ask(
 		mime = file.content_type or "image/png"
 		image_dict = {"type": "image_url", "image_url": f"data:{mime};base64,{b64}"}
 		content.append(HumanMessage(content=[image_dict]))
-		db.add(ChatHistory(user_id=user.id, chat_session_id=session_id, message=f"[Image uploaded: {file.filename}]", sender='user'))
 	if not (message or file):
 		return JSONResponse({"error": "No input provided."}, status_code=400)
 	try:
 		response = llm.invoke(content)
-		db.add(ChatHistory(user_id=user.id, chat_session_id=session_id, message=response.content, sender='ai'))
+		if message:
+			db.add(ChatHistory(user_id=current_user.id, chat_session_id=session_id, message=message, sender='user'))
+		if file:
+			db.add(ChatHistory(user_id=current_user.id, chat_session_id=session_id, message=f"[Image uploaded: {file.filename}]", sender='user'))
+		db.add(ChatHistory(user_id=current_user.id, chat_session_id=session_id, message=response.content, sender='ai'))
 		await db.commit()
 		return {"response": response.content}
 	except Exception as e:
 		logger.error(f"LLM call failed: {e}", exc_info=True)
-		# Optionally, return a generic error message to the user
 		return JSONResponse({"error": "AI service is currently unavailable. Please try again later."}, status_code=500)
