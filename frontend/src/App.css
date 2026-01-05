@@ -148,6 +148,14 @@ body, .App {
   background: var(--color-btn-hover);
 }
 
+/* ---------- Welcome Text ---------- */
+.chat-welcome-text {
+  text-align: center;
+  margin: 2rem 0;
+  color: var(--color-text-secondary);
+  font-size: 1.2rem;
+}
+
 /* ---------- Chat Main ---------- */
 .chat-main {
   flex: 1;
