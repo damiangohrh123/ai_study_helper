@@ -13,39 +13,61 @@ from deps import get_db
 from auth import get_password_hash, create_access_token
 from dotenv import load_dotenv
 
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
+load_dotenv()
 
+# Create a router for auth-related endpoints. Every route here will start with /auth
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# --- Utility functions ---
+async def commit_or_rollback(db: AsyncSession):
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise
+
+def set_refresh_cookie(response: Response, refresh_token: str):
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        max_age=14*24*60*60,  # 14 days
+        samesite="lax",
+        secure=True
+    )
+
+async def get_user_by_email(db: AsyncSession, email: str):
+    result = await db.execute(select(User).where(User.email == email))
+    return result.scalars().first()
+
+async def get_user_by_google_id(db: AsyncSession, google_id: str):
+    result = await db.execute(select(User).where(User.google_id == google_id))
+    return result.scalars().first()
+
+async def generate_refresh_token_for_user(db: AsyncSession, user: User):
+    user.refresh_token = secrets.token_urlsafe(32)
+    await commit_or_rollback(db)
+    return user.refresh_token
+
+# --- Routes ---
 
 # Register a new user
 @router.post("/register", response_model=Token)
 async def register(user: UserCreate, db: AsyncSession = Depends(get_db), response: Response = None):
-	# Check if email is already registered
-	result = await db.execute(select(User).where(User.email == user.email))
-	if result.scalars().first():
-		raise HTTPException(status_code=400, detail="Email already registered")
+    if await get_user_by_email(db, user.email):
+        raise HTTPException(status_code=400, detail="Email already registered")
 
-	refresh_token = secrets.token_urlsafe(32)
-	new_user = User(email=user.email, password_hash=get_password_hash(user.password), refresh_token=refresh_token)
-	db.add(new_user)
-	try:
-		await db.commit()
-		await db.refresh(new_user)
-	except IntegrityError:
-		await db.rollback()
-		raise HTTPException(status_code=400, detail="Registration failed")
+    new_user = User(email=user.email, password_hash=get_password_hash(user.password))
+    db.add(new_user)
+    await commit_or_rollback(db)
+    await db.refresh(new_user)
 
-	token = create_access_token({"sub": str(new_user.id)})
-	if response is not None:
-		response.set_cookie(
-			key="refresh_token",
-			value=refresh_token,
-			httponly=True,
-			max_age=14*24*60*60,  # 14 days
-			samesite="lax",
-			secure=True  # Only send over HTTPS
-		)
-	return {"access_token": token, "token_type": "bearer"}
+    refresh_token = await generate_refresh_token_for_user(db, new_user)
+    if response:
+        set_refresh_cookie(response, refresh_token)
+
+    token = create_access_token({"sub": str(new_user.id)})
+    return {"access_token": token, "token_type": "bearer"}
 
 # Login an existing user
 @router.post("/google", response_model=Token)
@@ -69,51 +91,22 @@ async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(g
 	google_id_val = idinfo["sub"]
 	email = idinfo.get("email")
 
-	# Check if a user with this Google ID already exists in our database
-	result = await db.execute(select(User).where(User.google_id == google_id_val))
-	user = result.scalars().first()
-
+	# Find user by Google ID or email
+	user = await get_user_by_google_id(db, google_id_val) or await get_user_by_email(db, email)
 	if not user:
-		# Try to find user by email
-		result_email = await db.execute(select(User).where(User.email == email))
-		user_by_email = result_email.scalars().first()
-		if user_by_email:
-			# Attach google_id to existing user
-			user_by_email.google_id = google_id_val
-			try:
-				await db.commit()
-				await db.refresh(user_by_email)
-			except IntegrityError:
-				await db.rollback()
-				raise HTTPException(status_code=400, detail="Google registration failed (attach google_id)")
-			user = user_by_email
-		else:
-			# Create new user
-			user = User(email=email, google_id=google_id_val)
-			db.add(user)
-			try:
-				await db.commit()
-				await db.refresh(user)
-			except IntegrityError:
-				await db.rollback()
-				raise HTTPException(status_code=400, detail="Google registration failed (new user)")
+		user = User(email=email, google_id=google_id_val)
+		db.add(user)
+	elif not user.google_id:
+		user.google_id = google_id_val
 
-	# Generate and store a new refresh token
-	refresh_token = secrets.token_urlsafe(32)
-	user.refresh_token = refresh_token
-	await db.commit()
-	# Create an access token (JWT) for the user
+	await commit_or_rollback(db)
+	await db.refresh(user)
+
+	refresh_token = await generate_refresh_token_for_user(db, user)
+	if response:
+		set_refresh_cookie(response, refresh_token)
+
 	token = create_access_token({"sub": str(user.id)})
-	if response is not None:
-		response.set_cookie(
-			key="refresh_token",
-			value=refresh_token,
-			httponly=True,
-			max_age=14*24*60*60,  # 14 days
-			samesite="lax",
-			secure=True  # Only send over HTTPS
-		)
-	# Return the access token and token type to the client
 	return {"access_token": token, "token_type": "bearer"}
 
 # Endpoint to refresh access token using refresh token cookie
@@ -122,10 +115,12 @@ async def refresh_token(request: Request, db: AsyncSession = Depends(get_db)):
 	refresh_token = request.cookies.get("refresh_token")
 	if not refresh_token:
 		raise HTTPException(status_code=401, detail="No refresh token provided")
+
 	result = await db.execute(select(User).where(User.refresh_token == refresh_token))
 	user = result.scalars().first()
 	if not user:
 		raise HTTPException(status_code=401, detail="Invalid refresh token")
+
 	# Optionally: rotate refresh token here for extra security
 	access_token = create_access_token({"sub": str(user.id)})
 	return {"access_token": access_token}
