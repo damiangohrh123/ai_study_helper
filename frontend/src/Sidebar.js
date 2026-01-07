@@ -1,14 +1,17 @@
 // Sidebar.js
 // Renders the sidebar with chat sessions, new chat button, theme toggle, and logout.
 import React, { useState, useEffect, useRef } from 'react';
+import { renameChatSession, deleteChatSession } from './api';
 
 function Sidebar({
   sessions,
+  setSessions,
   selectedSession,
   setSelectedSession,
   handleNewChat,
   ThemeToggle,
-  handleLogout
+  handleLogout,
+  setJwt
 }) {
 
   const [menuOpenId, setMenuOpenId] = useState(null);
@@ -36,7 +39,45 @@ function Sidebar({
     setMenuOpenId(menuOpenId === sessionId ? null : sessionId);
   };
 
-  const handleCloseMenu = () => setMenuOpenId(null);
+  // Rename chat handler
+  const handleRename = async (sessionId) => {
+    const current = sessions.find(s => s.id === sessionId);
+    const newTitle = prompt('Rename chat:', current?.title || '');
+    if (!newTitle || newTitle === current?.title) return setMenuOpenId(null);
+    try {
+      const res = await renameChatSession(sessionId, newTitle, setJwt);
+      if (res.ok) {
+        const updated = await res.json();
+        setSessions(sessions.map(s => s.id === sessionId ? { ...s, title: updated.title } : s));
+      } else {
+        alert('Failed to rename chat.');
+      }
+    } catch {
+      alert('Error renaming chat.');
+    }
+    setMenuOpenId(null);
+  };
+
+  // Delete chat handler
+  const handleDelete = async (sessionId) => {
+    if (!window.confirm('Delete this chat? This cannot be undone.')) return setMenuOpenId(null);
+    try {
+      const res = await deleteChatSession(sessionId, setJwt);
+      if (res.ok) {
+        setSessions(sessions.filter(s => s.id !== sessionId));
+        if (selectedSession === sessionId) {
+          // Select another session if possible
+          const remaining = sessions.filter(s => s.id !== sessionId);
+          setSelectedSession(remaining.length ? remaining[0].id : null);
+        }
+      } else {
+        alert('Failed to delete chat.');
+      }
+    } catch {
+      alert('Error deleting chat.');
+    }
+    setMenuOpenId(null);
+  };
 
   return (
     <div className="sidebar">
@@ -67,8 +108,8 @@ function Sidebar({
                 className="sidebar-chat-popup"
                 ref={el => (popupRefs.current[session.id] = el)}
               >
-                <button className="sidebar-chat-popup-btn" onClick={handleCloseMenu}>Rename</button>
-                <button className="sidebar-chat-popup-btn" onClick={handleCloseMenu}>Delete</button>
+                <button className="sidebar-chat-popup-btn" onClick={() => handleRename(session.id)}>Rename</button>
+                <button className="sidebar-chat-popup-btn" onClick={() => handleDelete(session.id)}>Delete</button>
               </div>
             )}
           </li>

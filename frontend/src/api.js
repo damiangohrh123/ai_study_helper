@@ -9,23 +9,63 @@
  * @returns {Promise<Response>}
  */
 export async function fetchWithAuth(url, options = {}, setJwt) {
-  const token = localStorage.getItem('ai_study_helper_jwt');
-  options.headers = options.headers || {};
-  if (token) options.headers['Authorization'] = `Bearer ${token}`;
+  try {
+    const token = localStorage.getItem('ai_study_helper_jwt');
+    options.headers = { ...(options.headers || {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) };
 
-  let res = await fetch(url, options);
+    let res = await fetch(url, options);
 
-  if (res.status === 401) {
-    const refreshRes = await fetch('http://localhost:8000/auth/refresh', { method: 'POST', credentials: 'include' });
-    if (refreshRes.ok) {
-      const data = await refreshRes.json();
-      if (data.access_token) {
-        localStorage.setItem('ai_study_helper_jwt', data.access_token);
-        if (setJwt) setJwt(data.access_token);
-        options.headers['Authorization'] = `Bearer ${data.access_token}`;
-        res = await fetch(url, options);
+    // If 401, try refresh once
+    if (res.status === 401) {
+      const refreshRes = await fetch('http://localhost:8000/auth/refresh', { method: 'POST', credentials: 'include' });
+      if (refreshRes.ok) {
+        const data = await refreshRes.json();
+        if (data.access_token) {
+          localStorage.setItem('ai_study_helper_jwt', data.access_token);
+          if (setJwt) setJwt(data.access_token);
+          options.headers = { ...options.headers, Authorization: `Bearer ${data.access_token}` };
+          res = await fetch(url, options);
+          // If still 401 after refresh, force logout (optional: throw)
+          if (res.status === 401) {
+            throw new Error('Session expired. Please log in again.');
+          }
+        }
+      } else {
+        throw new Error('Session expired. Please log in again.');
       }
     }
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => null);
+      throw new Error(errorData?.detail || errorData?.error || 'API request failed');
+    }
+    return res;
+  } catch (err) {
+    // Network or other error
+    throw err instanceof Error ? err : new Error('Network error');
   }
+}
+
+// PATCH rename chat session
+export async function renameChatSession(sessionId, title, setJwt) {
+  const res = await fetchWithAuth(
+    `http://localhost:8000/chat/sessions/${sessionId}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    },
+    setJwt
+  );
+  return res;
+}
+
+// DELETE chat session
+export async function deleteChatSession(sessionId, setJwt) {
+  const res = await fetchWithAuth(
+    `http://localhost:8000/chat/sessions/${sessionId}`,
+    { method: 'DELETE' },
+    setJwt
+  );
   return res;
 }

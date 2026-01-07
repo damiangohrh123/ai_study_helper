@@ -132,11 +132,13 @@ function AppInner() {
       <div className="App app-main">
         <Sidebar
           sessions={sessions}
+          setSessions={setSessions}
           selectedSession={selectedSession}
           setSelectedSession={setSelectedSession}
           handleNewChat={handleNewChat}
           ThemeToggle={ThemeToggle}
           handleLogout={handleLogout}
+          setJwt={setJwt}
         />
         <ChatMain
           messages={messages}
