@@ -49,7 +49,6 @@ function ChatMain({
 }) {
   return (
     <div className="chat-main">
-      <h2 className="chat-title">AI Study Helper</h2>
 
       <div className="chat-history">
         {messages.length === 0 ? (
