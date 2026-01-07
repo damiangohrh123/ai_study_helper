@@ -10,7 +10,8 @@ function Login({ setJwt }) {
       if (!idToken) throw new Error('No token received');
 
       // Send the Google token to the backend to exchange for the JWT
-      const response = await fetch('http://localhost:8000/auth/google', {
+      const BASE_URL = process.env.REACT_APP_API_URL;
+      const response = await fetch(`${BASE_URL}/auth/google`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: idToken }),

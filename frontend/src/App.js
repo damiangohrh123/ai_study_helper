@@ -10,6 +10,8 @@ import 'katex/dist/katex.min.css';
 import Sidebar from './Sidebar';
 import ChatMain from './ChatMain';
 
+const BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+
 function AppInner() {
   const { jwt, setJwt, logout } = useAuth();
 
@@ -31,7 +33,7 @@ function AppInner() {
   // Load chat sessions after login
   useEffect(() => {
     if (!jwt) return;
-    fetchWithAuth('http://localhost:8000/chat/sessions', {}, setJwt)
+    fetchWithAuth(`${BASE_URL}/chat/sessions`, {}, setJwt)
       .then(res => res.json())
       .then(data => {
         setSessions(data);
@@ -42,7 +44,7 @@ function AppInner() {
   // Load chat history when session changes
   useEffect(() => {
     if (!jwt || !selectedSession) return;
-    fetchWithAuth(`http://localhost:8000/chat/history?session_id=${selectedSession}`, {}, setJwt)
+    fetchWithAuth(`${BASE_URL}/chat/history?session_id=${selectedSession}`, {}, setJwt)
       .then(res => res.json())
       .then(data => setMessages(Array.isArray(data) && data.length ? data : []))
       .catch(() => setMessages([]));
@@ -74,7 +76,7 @@ function AppInner() {
       if (image) formData.append('file', image);
       if (jwt && selectedSession) formData.append('session_id', selectedSession);
 
-      const res = await fetchWithAuth('http://localhost:8000/chat/ask', {
+      const res = await fetchWithAuth(`${BASE_URL}/chat/ask`, {
         method: 'POST',
         body: formData,
       }, setJwt);
@@ -116,7 +118,7 @@ function AppInner() {
 
   const handleNewChat = async () => {
     const title = prompt('Enter a title for the new chat:') || 'New Chat';
-    const res = await fetch('http://localhost:8000/chat/sessions', {
+    const res = await fetch(`${BASE_URL}/chat/sessions`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${jwt}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ title }),

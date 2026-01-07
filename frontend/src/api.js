@@ -1,6 +1,9 @@
 // api.js
 // Utility functions for making API requests (e.g., fetchWithAuth) with JWT and token refresh logic.
 // Does not manage state or context—just network helpers for use throughout the app.
+
+const BASE_URL = process.env.REACT_APP_API_URL;
+
 /**
  * Fetch with automatic token refresh for protected endpoints.
  * @param {string} url
@@ -17,7 +20,7 @@ export async function fetchWithAuth(url, options = {}, setJwt) {
 
     // If 401, try refresh once
     if (res.status === 401) {
-      const refreshRes = await fetch('http://localhost:8000/auth/refresh', { method: 'POST', credentials: 'include' });
+      const refreshRes = await fetch(`${BASE_URL}/auth/refresh`, { method: 'POST', credentials: 'include' });
       if (refreshRes.ok) {
         const data = await refreshRes.json();
         if (data.access_token) {
@@ -49,7 +52,7 @@ export async function fetchWithAuth(url, options = {}, setJwt) {
 // PATCH rename chat session
 export async function renameChatSession(sessionId, title, setJwt) {
   const res = await fetchWithAuth(
-    `http://localhost:8000/chat/sessions/${sessionId}`,
+    `${BASE_URL}/chat/sessions/${sessionId}`,
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -63,7 +66,7 @@ export async function renameChatSession(sessionId, title, setJwt) {
 // DELETE chat session
 export async function deleteChatSession(sessionId, setJwt) {
   const res = await fetchWithAuth(
-    `http://localhost:8000/chat/sessions/${sessionId}`,
+    `${BASE_URL}/chat/sessions/${sessionId}`,
     { method: 'DELETE' },
     setJwt
   );
