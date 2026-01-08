@@ -60,10 +60,6 @@ function ChatMain({
             const isUser = msg.sender === 'user';
             const content = isUser ? msg.text : normalizeLatex(msg.text);
 
-            // Console logs for debugging
-            if (!isUser) console.log("Raw text: \n", msg.text);
-            if (!isUser) console.log("Preprocessed content: \n", content);
-
             return (
               <div key={idx} className={`chat-message ${isUser ? 'user' : 'ai'}`}>
                 {isUser ? (
