@@ -1,10 +1,10 @@
-import os, logging, base64, textwrap
-from unittest import result
+import os, logging, base64, textwrap, re, tiktoken
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Path, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from fastapi.responses import JSONResponse
+
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from datetime import datetime
@@ -25,6 +25,19 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 # Initialize LLM
 llm = ChatOpenAI(model="gpt-4o", openai_api_key=os.getenv("OPENAI_API_KEY"))
+
+# Cache the tokenizer encoding at module level
+encoding = tiktoken.encoding_for_model("gpt-4o")
+
+# Preprocess text to optimize for LLM input
+def preprocess_text(text):
+    if not text:
+        return ''
+    text = ''.join(c for c in text if c.isprintable())            # Remove non-printable characters
+    text = re.sub(r'[ \t]+', ' ', text)                           # Collapse multiple spaces (but preserve newlines)
+    text = re.sub(r'\n{3,}', '\n\n', text)                        # Collapse 3+ newlines to 2 newlines
+    text = '\n'.join(line.strip() for line in text.splitlines())  # Remove leading/trailing whitespace on each line
+    return text.strip()                                           # Remove leading/trailing whitespace overall
 
 # ---------------- Chat Session Endpoints ---------------- #
 # Endpoint to create a new chat session
@@ -136,25 +149,47 @@ async def ask(
     current_user.last_active = datetime.utcnow()
     await db.commit()
 
-    # 1. Build chat history content
+    # 1. Build chat history content (token-aware trimming)
     query = select(ChatHistory).where(ChatHistory.user_id == current_user.id)
     if session_id is not None:
         query = query.where(ChatHistory.chat_session_id == session_id)
-    query = query.order_by(ChatHistory.timestamp.asc()).limit(10)
+    query = query.order_by(ChatHistory.timestamp.asc())
+    result = await db.execute(query)
     history_rows = result.scalars().all()
     content = []
 
-    for row in history_rows:
+    MAX_USER_MSG_TOKENS = 2000
+    MAX_HISTORY_CONTEXT_TOKENS = 10000  # total context tokens for history
+    context_tokens = 0
+    trimmed_content = []
+    
+    # Iterate from most recent to oldest
+    for row in reversed(history_rows):
+        msg = preprocess_text(row.message or "")
+        if not msg:
+            continue
+        tokens = encoding.encode(msg)
+        tokens_len = len(tokens)
+        if context_tokens + tokens_len > MAX_HISTORY_CONTEXT_TOKENS:
+            break
         sender = (row.sender or "").lower()
-        if sender in ("user", "User"):
-            content.append(HumanMessage(content=row.message))
+        if sender == "user":
+            trimmed_content.insert(0, HumanMessage(content=msg))
         elif sender in ("ai", "assistant", "bot"):
-            content.append(AIMessage(content=row.message))
+            trimmed_content.insert(0, AIMessage(content=msg))
         else:
-            # fallback: treat as user
-            content.append(HumanMessage(content=row.message))
+            trimmed_content.insert(0, HumanMessage(content=msg))
+        context_tokens += tokens_len
+    content = trimmed_content
+
+    # Log the chat history and user input that will be sent to the LLM
     if message:
-        content.append(HumanMessage(content=message))
+        msg = preprocess_text(message)
+        if msg:
+            tokens = encoding.encode(msg)
+            if len(tokens) > MAX_USER_MSG_TOKENS:
+                msg = encoding.decode(tokens[:MAX_USER_MSG_TOKENS]) + '...'
+            content.append(HumanMessage(content=msg))
     if file:
         image_bytes = await file.read()
         b64 = base64.b64encode(image_bytes).decode()
@@ -167,20 +202,14 @@ async def ask(
     # 2. Prepend SystemMessage for KaTeX-ready formatting
     system_prompt = SystemMessage(
         content=textwrap.dedent("""\
-            You are a helpful tutor for students.
-
-            Rules:
-            - Inline math MUST use single dollar signs, e.g., $a^2 + b^2 = c^2$
-            - Display equations MUST use double dollar signs on their own lines, e.g.,
-
-            $$
-            E = mc^2
-            $$
-
-            - Do NOT use \\( \\) or \\[ \\] for math
-            - Do NOT bold formulas or equations using ** (never surround math with double asterisks)
-            - Ensure LaTeX is valid and compilable
-            - If no math is present, just answer normally
+            You are a helpful tutor.
+            Formatting rules:
+            - Inline math: $a^2 + b^2 = c^2$
+            - Display math: $$ E = mc^2 $$
+            - Never use \( \) or \[ \]
+            - Never bold math
+            - LaTeX must compile
+            - If no math is needed, answer normally
         """)
     )
     content = [system_prompt] + content
