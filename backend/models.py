@@ -25,6 +25,7 @@ class ChatSession(Base):
     title = Column(String, default="New Chat")                                  # title of the chat session                
     created_at = Column(DateTime, default=datetime.utcnow)                      # session creation timestamp
     summary = Column(Text, nullable=True)                                        # summary of the chat session (for LLM context)
+    summary_up_to_message_id = Column(Integer, nullable=True)                    # ID of the last message included in the summary
 
     user = relationship("User", back_populates="chat_sessions")                 # reference to the User
     messages = relationship("ChatHistory", back_populates="chat_session")       # messages in this chat session

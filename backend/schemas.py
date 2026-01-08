@@ -19,6 +19,8 @@ class ChatSessionOut(BaseModel):
     id: int
     title: str
     created_at: datetime
+    summary: str | None = None
+    summary_up_to_message_id: int | None = None
 
     class Config:
         from_attributes = True
