@@ -1,5 +1,4 @@
-import os
-import logging
+import os, logging
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from jose import jwt, JWTError
@@ -17,10 +16,11 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret")  # JWT secret
-logger.info("Loaded SECRET_KEY from environment.")
+# Tokens configuration
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret")  # JWT secret key
 ALGORITHM = "HS256"                                 # JWT signing algorithm
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24               # Token validity: 1 day
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24               # JWT Token validity: 1 day
+REFRESH_TOKEN_EXPIRE_SECONDS = 14 * 24 * 60 * 60    # Refresh token validity: 14 days
 
 # Password Hashing Setup
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

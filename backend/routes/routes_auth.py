@@ -1,16 +1,19 @@
 import os
 import secrets
+import hashlib
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Response, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from google.auth.exceptions import GoogleAuthError
-from models import User
+from models import User, RefreshToken
 from schemas import UserCreate, Token, GoogleLoginRequest
 from deps import get_db
-from auth import get_password_hash, create_access_token
+from auth import get_password_hash, create_access_token, REFRESH_TOKEN_EXPIRE_SECONDS
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -31,10 +34,15 @@ def set_refresh_cookie(response: Response, refresh_token: str):
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        max_age=14*24*60*60,  # 14 days
+        secure=True,
         samesite="lax",
-        secure=True
+        max_age=REFRESH_TOKEN_EXPIRE_SECONDS,
+        path="/",
     )
+
+# Helper to hash refresh tokens (use SHA-256 for simplicity)
+def hash_refresh_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 async def get_user_by_email(db: AsyncSession, email: str):
     result = await db.execute(select(User).where(User.email == email))
@@ -45,15 +53,33 @@ async def get_user_by_google_id(db: AsyncSession, google_id: str):
     return result.scalars().first()
 
 async def generate_refresh_token_for_user(db: AsyncSession, user: User):
-    user.refresh_token = secrets.token_urlsafe(32)
-    await commit_or_rollback(db)
-    return user.refresh_token
+	# Generate a new random token
+	raw_token = secrets.token_urlsafe(32)
+	token_hash = hash_refresh_token(raw_token)
+	expires_at = datetime.utcnow() + timedelta(seconds=REFRESH_TOKEN_EXPIRE_SECONDS)
+
+	# Invalidate all previous tokens for this user (optional, for single-session)
+	await db.execute(
+		RefreshToken.__table__.update().where(RefreshToken.user_id == user.id, RefreshToken.revoked_at == None).values(revoked_at=datetime.utcnow())
+	)
+
+	# Store new token
+	new_token = RefreshToken(
+		user_id=user.id,
+		token_hash=token_hash,
+		expires_at=expires_at,
+		created_at=datetime.utcnow(),
+		revoked_at=None
+	)
+	db.add(new_token)
+	await db.commit()
+	return raw_token
 
 # --- Routes ---
 
 # Register a new user
 @router.post("/register", response_model=Token)
-async def register(user: UserCreate, db: AsyncSession = Depends(get_db), response: Response = None):
+async def register(user: UserCreate, response: Response, db: AsyncSession = Depends(get_db)):
     if await get_user_by_email(db, user.email):
         raise HTTPException(status_code=400, detail="Email already registered")
 
@@ -63,15 +89,14 @@ async def register(user: UserCreate, db: AsyncSession = Depends(get_db), respons
     await db.refresh(new_user)
 
     refresh_token = await generate_refresh_token_for_user(db, new_user)
-    if response:
-        set_refresh_cookie(response, refresh_token)
+    set_refresh_cookie(response, refresh_token)
 
     token = create_access_token({"sub": str(new_user.id)})
     return {"access_token": token, "token_type": "bearer"}
 
 # Login an existing user
 @router.post("/google", response_model=Token)
-async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(get_db), response: Response = None):
+async def google_login(payload: GoogleLoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
 	# Load Google OAuth client ID from environment variables
 	GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 	if not GOOGLE_CLIENT_ID:
@@ -103,8 +128,7 @@ async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(g
 	await db.refresh(user)
 
 	refresh_token = await generate_refresh_token_for_user(db, user)
-	if response:
-		set_refresh_cookie(response, refresh_token)
+	set_refresh_cookie(response, refresh_token)
 
 	token = create_access_token({"sub": str(user.id)})
 	return {"access_token": token, "token_type": "bearer"}
@@ -112,15 +136,46 @@ async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(g
 # Endpoint to refresh access token using refresh token cookie
 @router.post("/refresh")
 async def refresh_token(request: Request, db: AsyncSession = Depends(get_db)):
-	refresh_token = request.cookies.get("refresh_token")
-	if not refresh_token:
+	raw_token = request.cookies.get("refresh_token")
+	if not raw_token:
 		raise HTTPException(status_code=401, detail="No refresh token provided")
+	token_hash = hash_refresh_token(raw_token)
+	
+	# Find a valid, unexpired, unrevoked refresh token
+	now = datetime.utcnow()
+	result = await db.execute(
+		select(RefreshToken, User)
+		.join(User, RefreshToken.user_id == User.id)
+		.where(
+			RefreshToken.token_hash == token_hash,
+			RefreshToken.expires_at > now,
+			RefreshToken.revoked_at == None
+		)
+	)
+	row = result.first()
+	if not row:
+		raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+	refresh_token_obj, user = row
 
-	result = await db.execute(select(User).where(User.refresh_token == refresh_token))
-	user = result.scalars().first()
-	if not user:
-		raise HTTPException(status_code=401, detail="Invalid refresh token")
+	# Rotate: revoke old token
+	refresh_token_obj.revoked_at = now
 
-	# Optionally: rotate refresh token here for extra security
+	# Issue new refresh token
+	new_raw_token = secrets.token_urlsafe(32)
+	new_token_hash = hash_refresh_token(new_raw_token)
+	new_expires_at = now + timedelta(seconds=REFRESH_TOKEN_EXPIRE_SECONDS)
+	new_token_obj = RefreshToken(
+		user_id=user.id,
+		token_hash=new_token_hash,
+		expires_at=new_expires_at,
+		created_at=now,
+		revoked_at=None
+	)
+	db.add(new_token_obj)
+	await db.commit()
+
+	# Set new cookie and return access token as JSON
 	access_token = create_access_token({"sub": str(user.id)})
-	return {"access_token": access_token}
+	response = JSONResponse({"access_token": access_token})
+	set_refresh_cookie(response, new_raw_token)
+	return response

@@ -38,8 +38,14 @@ function AppInner() {
       .then(data => {
         setSessions(data);
         if (data.length > 0) setSelectedSession(data[0].id);
+      })
+      .catch(err => {
+        if (err.message === 'Session expired. Please log in again.') {
+          logout();
+          alert('Session expired. Please log in again.');
+        }
       });
-  }, [jwt, setJwt]);
+  }, [jwt, setJwt, logout]);
 
   // Load chat history when session changes
   useEffect(() => {
@@ -47,8 +53,15 @@ function AppInner() {
     fetchWithAuth(`${BASE_URL}/chat/history?session_id=${selectedSession}`, {}, setJwt)
       .then(res => res.json())
       .then(data => setMessages(Array.isArray(data) && data.length ? data : []))
-      .catch(() => setMessages([]));
-  }, [jwt, selectedSession, setJwt]);
+      .catch(err => {
+        if (err.message === 'Session expired. Please log in again.') {
+          logout();
+          alert('Session expired. Please log in again.');
+        } else {
+          setMessages([]);
+        }
+      });
+  }, [jwt, selectedSession, setJwt, logout]);
 
   // Image file selection
   const handleImageChange = e => e.target.files && setImage(e.target.files[0]);
@@ -86,8 +99,13 @@ function AppInner() {
         ...msgs,
         { sender: 'ai', text: data.response || data.error || 'Error: No response from server.' },
       ]);
-    } catch {
-      setMessages(msgs => [...msgs, { sender: 'ai', text: 'Error: Could not reach server.' }]);
+    } catch (err) {
+      if (err.message === 'Session expired. Please log in again.') {
+        logout();
+        alert('Session expired. Please log in again.');
+      } else {
+        setMessages(msgs => [...msgs, { sender: 'ai', text: 'Error: Could not reach server.' }]);
+      }
     } finally {
       setInput('');
       setImage(null);
