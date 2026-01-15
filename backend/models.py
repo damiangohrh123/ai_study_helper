@@ -54,3 +54,32 @@ class ChatHistory(Base):
 
     user = relationship("User", back_populates="chats")                               # reference to the User
     chat_session = relationship("ChatSession", back_populates="messages")             # reference to the ChatSession
+
+class SubjectCluster(Base):
+    __tablename__ = "subject_clusters"
+
+    id = Column(Integer, primary_key=True)                             # unique subject cluster ID
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # ID of the user this subject belongs to
+    subject = Column(String, nullable=False)                           # subject name (e.g., "Math", "Physics")
+    learning_skill = Column(String, nullable=False)                    # user's skill level in the subject ('Weak', 'Improving', 'Strong')
+    last_updated = Column(DateTime, default=datetime.utcnow)           # last time this subject cluster was updated
+
+class ConceptCluster(Base):
+    __tablename__ = "concept_clusters"
+
+    id = Column(Integer, primary_key=True)                             # unique concept cluster ID
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # ID of the user this concept belongs to
+    subject = Column(String, nullable=False)                           # subject this concept is associated with
+    embedding = Column(String, nullable=False)                         # vector/embedding representation of the concept
+    name = Column(String, nullable=True)                               # optional human-readable concept name
+    confidence = Column(String, nullable=False)                        # confidence level for user understanding
+    last_seen = Column(DateTime, default=datetime.utcnow)              # last time this concept appeared in interaction
+
+class InteractionSignal(Base):
+    __tablename__ = "interaction_signals"
+
+    id = Column(Integer, primary_key=True)                                      # unique interaction signal ID
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)           # ID of the user who generated the signal
+    type = Column(String, nullable=False)                                       # type of signal (e.g., 'follow_up', 'self_correction')
+    timestamp = Column(DateTime, default=datetime.utcnow)                       # time when the signal occurred
+    message_id = Column(Integer, ForeignKey("chat_history.id"), nullable=True)  # related chat message (if applicable)
