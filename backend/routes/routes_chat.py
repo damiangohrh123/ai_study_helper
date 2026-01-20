@@ -5,16 +5,19 @@ from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Path, Body
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, desc
 
 import tiktoken
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from collections import deque
 
 from models import User, ChatHistory, ChatSession
 from schemas import ChatSessionCreate, ChatSessionOut
 from deps import get_db
 from auth import get_current_user
+
+from learning import process_learning_message
 
 load_dotenv()
 
@@ -38,9 +41,9 @@ llm_summarize = ChatOpenAI(
     openai_api_key=os.getenv("OPENAI_API_KEY")
 )
 
-# Token encodings
-encoding_chat = tiktoken.encoding_for_model("gpt-4o")
-encoding_summary = tiktoken.encoding_for_model("gpt-4o-mini")
+# Token encodings (explicit, robust to model remapping)
+encoding_chat = tiktoken.get_encoding("o200k_base")  # gpt-4o
+encoding_summary = tiktoken.get_encoding("o200k_base")  # gpt-4o-mini
 
 # Token Limits
 TOTAL_MODEL_TOKENS = 8000
@@ -162,9 +165,10 @@ async def build_llm_content(chat_session, window_rows, user_msg=None, file=None)
     # File
     if file:
         image_bytes = await file.read()
+        await file.seek(0)  # Allow file to be re-read later if needed. (seek(0) moves pointer back to start)
         b64 = base64.b64encode(image_bytes).decode()
         mime = file.content_type or "image/png"
-        image_dict = {"type": "image_url", "image_url": f"data:{mime};base64,{b64}"}
+        image_dict = {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
         content.append(HumanMessage(content=[image_dict]))
     return content
 
@@ -263,7 +267,6 @@ async def get_chat_history(
         for row in history
     ]
 
-
 # ------------------------------------------------ Ask Endpoint ------------------------------------------------ #
 @router.post("/ask")
 async def ask(
@@ -274,55 +277,55 @@ async def ask(
     current_user: User = Depends(get_current_user),
 ):
     """Send a message (and optional file) to the AI for a specific chat session."""
+
+    # Check for missing session ID
+    if session_id is None:
+        raise HTTPException(status_code=400, detail="Session ID required.")
+
+    # Check for overly long message
+    if message and len(message) > 20_000:
+        raise HTTPException(status_code=400, detail="Message too long")
+
     # Update last active timestamp
     current_user.last_active = datetime.utcnow()
     await db.commit()
 
-    # 1. Build chat history content (token-aware trimming + rolling summary)
-    if session_id is None:
-        return JSONResponse({"error": "Session ID required."}, status_code=400)
+    # Fetch chat session and verify ownership
+    chat_session = await get_user_chat_session(session_id, current_user, db)
 
-    # Fetch session and check ownership
-    try:
-        chat_session = await get_user_chat_session(session_id, current_user, db)
-    except HTTPException as e:
-        return JSONResponse({"error": e.detail}, status_code=e.status_code)
-
-    # Fetch all messages for this session
-    query = select(ChatHistory).where(ChatHistory.chat_session_id == session_id).order_by(ChatHistory.timestamp.asc())
-    result = await db.execute(query)
+    # Fetch full chat history for the session
+    result = await db.execute(
+        select(ChatHistory)
+        .where(ChatHistory.chat_session_id == session_id)
+        .order_by(ChatHistory.timestamp.asc())
+    )
     history_rows = result.scalars().all()
 
-    # Determine window by tokens
+    # Token-aware history window
     max_window_tokens = TOTAL_MODEL_TOKENS - SYSTEM_PROMPT_TOKENS - SUMMARY_MAX_TOKENS - USER_MAX_TOKENS - RESPONSE_RESERVE_TOKENS
-    window_rows = []
+    window_rows = deque()
     window_tokens = 0
     for row in reversed(history_rows):
         msg = preprocess_text(row.message or "")
         tokens = encoding_chat.encode(msg)
         if window_tokens + len(tokens) > max_window_tokens:
             break
-        window_rows.insert(0, row)
+        window_rows.appendleft(row)
         window_tokens += len(tokens)
+    window_rows = list(window_rows)
 
-    # Everything before the window is for summary
-    if window_rows:
-        window_start_id = window_rows[0].id
-        summary_rows = [r for r in history_rows if r.id < window_start_id]
-    else:
-        summary_rows = history_rows
+    # Determine messages for the summary (all messages before the window)
+    summary_rows = [r for r in history_rows if r.id < window_rows[0].id] if window_rows else history_rows
 
-    # Incremental summarization: only summarize new messages
+    # Track the last summarized message ID and filter new messages for summarization
     last_summarized_id = chat_session.summary_up_to_message_id or 0
     new_messages = [r for r in summary_rows if r.id > last_summarized_id]
+
+    # Call the incremental summarization function if there are new messages
     if new_messages:
         try:
             summary_text, new_last_id = await summarize_incremental(
-                session_id,
-                chat_session.summary,
-                last_summarized_id,
-                new_messages,
-                db
+                session_id, chat_session.summary, last_summarized_id, new_messages, db
             )
             chat_session.summary = summary_text
             chat_session.summary_up_to_message_id = new_last_id
@@ -330,24 +333,47 @@ async def ask(
         except Exception as e:
             logger.warning(f"Summarization failed: {e}")
 
-    # Build content for LLM using helper
+    # Build LLM content
     content = await build_llm_content(chat_session, window_rows, message, file)
-    if len(content) == 1:  # Only system prompt, no user input
-        return JSONResponse({"error": "No input provided."}, status_code=400)
+    if len(content) == 1:  # Only system prompt
+        raise HTTPException(status_code=400, detail="No input provided.")
 
-    # Invoke the model and save messages to DB
+    # -------------------- LLM call & save messages --------------------
     try:
         response = await llm.ainvoke(content)
-        await save_chat_messages(
-            db,
-            session_id,
-            current_user.id,
-            [
-                ("user", message),
-                ("user", f"[Image uploaded: {file.filename}]" if file else None),
-                ("ai", response.content),
-            ]
-        )
+        rows_to_add = []
+
+        if message:
+            rows_to_add.append(ChatHistory(
+                user_id=current_user.id,
+                chat_session_id=session_id,
+                message=message,
+                sender="user"
+            ))
+
+        if file and file.filename:
+            rows_to_add.append(ChatHistory(
+                user_id=current_user.id,
+                chat_session_id=session_id,
+                message=f"[Image uploaded: {file.filename}]",
+                sender="user"
+            ))
+
+        rows_to_add.append(ChatHistory(
+            user_id=current_user.id,
+            chat_session_id=session_id,
+            message=response.content,
+            sender="ai"
+        ))
+
+        db.add_all(rows_to_add)
+        await db.flush()  # Assign IDs
+
+        # Learning analytics only for user message
+        if message:
+            await process_learning_message(db, current_user.id, message, rows_to_add[0].id)
+
+        await db.commit()
         return {"response": response.content}
 
     except Exception as e:
