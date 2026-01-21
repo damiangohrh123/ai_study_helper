@@ -82,7 +82,6 @@ function Sidebar({
   return (
     <div className="sidebar">
       <h3 className="sidebar-title">AI Study Helper</h3>
-      
       <ul className="sidebar-list">
         {sessions.map(session => (
           <li key={session.id} className="sidebar-list-item" style={{ position: 'relative' }}>
@@ -120,6 +119,13 @@ function Sidebar({
         onClick={handleNewChat}
       >
         + New Chat
+      </button>
+      <button
+        className="sidebar-profile-btn"
+        style={{ width: '100%', marginTop: 12 }}
+        onClick={() => setSelectedSession('profile')}
+      >
+        Profile
       </button>
       <div className="sidebar-bottom">
         <ThemeToggle />

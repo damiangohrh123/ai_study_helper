@@ -72,3 +72,23 @@ export async function deleteChatSession(sessionId, setJwt) {
   );
   return res;
 }
+
+// Fetch user progress (subjects and concepts)
+export async function fetchProgress(setJwt) {
+  const res = await fetchWithAuth(
+    `${BASE_URL}/progress`,
+    {},
+    setJwt
+  );
+  return res.json();
+}
+
+// Fetch recent reflection signals
+export async function fetchReflection(setJwt, days = 7) {
+  const res = await fetchWithAuth(
+    `${BASE_URL}/progress/reflection?days=${days}`,
+    {},
+    setJwt
+  );
+  return res.json();
+}

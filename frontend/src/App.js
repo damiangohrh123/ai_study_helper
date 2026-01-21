@@ -9,6 +9,7 @@ import Login from './Login';
 import 'katex/dist/katex.min.css';
 import Sidebar from './Sidebar';
 import ChatMain from './ChatMain';
+import ProfilePage from './ProfilePage';
 
 const BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -47,9 +48,9 @@ function AppInner() {
       });
   }, [jwt, setJwt, logout]);
 
-  // Load chat history when session changes
+  // Load chat history when session changes, but skip if profile page is selected
   useEffect(() => {
-    if (!jwt || !selectedSession) return;
+    if (!jwt || !selectedSession || selectedSession === 'profile') return;
     fetchWithAuth(`${BASE_URL}/chat/history?session_id=${selectedSession}`, {}, setJwt)
       .then(res => res.json())
       .then(data => setMessages(Array.isArray(data) && data.length ? data : []))
@@ -160,16 +161,20 @@ function AppInner() {
           handleLogout={handleLogout}
           setJwt={setJwt}
         />
-        <ChatMain
-          messages={messages}
-          loading={loading}
-          input={input}
-          setInput={setInput}
-          handleKeyDown={handleKeyDown}
-          handleImageChange={handleImageChange}
-          image={image}
-          handleSend={handleSend}
-        />
+        {selectedSession === 'profile' ? (
+          <ProfilePage setJwt={setJwt} />
+        ) : (
+          <ChatMain
+            messages={messages}
+            loading={loading}
+            input={input}
+            setInput={setInput}
+            handleKeyDown={handleKeyDown}
+            handleImageChange={handleImageChange}
+            image={image}
+            handleSend={handleSend}
+          />
+        )}
       </div>
     );
   }
