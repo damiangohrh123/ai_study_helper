@@ -142,7 +142,6 @@ async def refresh_token(request: Request, db: AsyncSession = Depends(get_db)):
 	token_hash = hash_refresh_token(raw_token)
 	
 	# Find a valid, unexpired, unrevoked refresh token
-	from datetime import timezone
 	now = datetime.now(timezone.utc)
 	result = await db.execute(
 		select(RefreshToken, User)
