@@ -4,7 +4,7 @@ from sqlalchemy import select, desc
 from models import User, SubjectCluster, ConceptCluster, InteractionSignal
 from deps import get_db
 from auth import get_current_user
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 router = APIRouter(prefix="/progress", tags=["progress"])
 
@@ -46,7 +46,7 @@ async def get_reflection(
     days: int = 7,
 ):
     """Return recent interaction signals and learning events (default: last 7 days)."""
-    since = datetime.utcnow() - timedelta(days=days)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
     result = await db.execute(
         select(InteractionSignal)
         .where(InteractionSignal.user_id == current_user.id, InteractionSignal.timestamp >= since)

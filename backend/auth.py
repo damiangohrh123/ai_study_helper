@@ -1,6 +1,6 @@
 import os, logging
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 from fastapi import HTTPException, Depends
@@ -39,7 +39,7 @@ def verify_password(plain: str, hashed: str):
 def create_access_token(data: dict):
     """Create a JWT access token with expiration"""
     to_encode = data.copy()
-    to_encode["exp"] = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode["exp"] = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 # --- Get Current User from Token ---

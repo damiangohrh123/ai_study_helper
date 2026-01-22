@@ -1,7 +1,7 @@
 import os
 import secrets
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Response, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,11 +56,11 @@ async def generate_refresh_token_for_user(db: AsyncSession, user: User):
 	# Generate a new random token
 	raw_token = secrets.token_urlsafe(32)
 	token_hash = hash_refresh_token(raw_token)
-	expires_at = datetime.utcnow() + timedelta(seconds=REFRESH_TOKEN_EXPIRE_SECONDS)
+	expires_at = datetime.now(timezone.utc) + timedelta(seconds=REFRESH_TOKEN_EXPIRE_SECONDS)
 
 	# Invalidate all previous tokens for this user (optional, for single-session)
 	await db.execute(
-		RefreshToken.__table__.update().where(RefreshToken.user_id == user.id, RefreshToken.revoked_at == None).values(revoked_at=datetime.utcnow())
+		RefreshToken.__table__.update().where(RefreshToken.user_id == user.id, RefreshToken.revoked_at == None).values(revoked_at=datetime.now(timezone.utc))
 	)
 
 	# Store new token
@@ -68,7 +68,7 @@ async def generate_refresh_token_for_user(db: AsyncSession, user: User):
 		user_id=user.id,
 		token_hash=token_hash,
 		expires_at=expires_at,
-		created_at=datetime.utcnow(),
+		created_at=datetime.now(timezone.utc),
 		revoked_at=None
 	)
 	db.add(new_token)
@@ -142,7 +142,8 @@ async def refresh_token(request: Request, db: AsyncSession = Depends(get_db)):
 	token_hash = hash_refresh_token(raw_token)
 	
 	# Find a valid, unexpired, unrevoked refresh token
-	now = datetime.utcnow()
+	from datetime import timezone
+	now = datetime.now(timezone.utc)
 	result = await db.execute(
 		select(RefreshToken, User)
 		.join(User, RefreshToken.user_id == User.id)

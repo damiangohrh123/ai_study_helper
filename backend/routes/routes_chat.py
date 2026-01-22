@@ -1,5 +1,5 @@
 import os, logging, base64, textwrap, re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Path, Body
@@ -287,7 +287,7 @@ async def ask(
         raise HTTPException(status_code=400, detail="Message too long")
 
     # Update last active timestamp
-    current_user.last_active = datetime.utcnow()
+    current_user.last_active = datetime.now(timezone.utc)
     await db.commit()
 
     # Fetch chat session and verify ownership
