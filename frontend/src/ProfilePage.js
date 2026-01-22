@@ -10,13 +10,13 @@ function ProfilePage({ setJwt }) {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    async function loadData() {
+    (async () => {
       setLoading(true);
       setError(null);
       try {
         const [progressData, reflectionData] = await Promise.all([
           fetchProgress(setJwt),
-          fetchReflection(setJwt)
+          fetchReflection(setJwt),
         ]);
         setProgress(progressData);
         setReflection(reflectionData);
@@ -25,9 +25,12 @@ function ProfilePage({ setJwt }) {
       } finally {
         setLoading(false);
       }
-    }
-    loadData();
+    })();
   }, [setJwt]);
+
+  // Date formatting helpers
+  const formatDate = d => new Date(d).toLocaleDateString();
+  const formatDateTime = d => new Date(d).toLocaleString();
 
   if (loading) return <div className="profile-loading">Loading profile...</div>;
   if (error) return <div className="profile-error">{error}</div>;
@@ -41,7 +44,7 @@ function ProfilePage({ setJwt }) {
           <ul>
             {progress.subjects.map((s, i) => (
               <li key={i}>
-                <strong>{s.subject}:</strong> {s.learning_skill} <span style={{color:'#888', fontSize:'0.9em'}}>({new Date(s.last_updated).toLocaleDateString()})</span>
+                <strong>{s.subject}:</strong> {s.learning_skill} <span className="profile-date">({formatDate(s.last_updated)})</span>
               </li>
             ))}
           </ul>
@@ -53,7 +56,7 @@ function ProfilePage({ setJwt }) {
           <ul>
             {progress.concepts.map((c, i) => (
               <li key={i}>
-                <strong>{c.subject}</strong> - {c.name || 'Unnamed'}: {c.confidence} <span style={{color:'#888', fontSize:'0.9em'}}>({new Date(c.last_seen).toLocaleDateString()})</span>
+                <strong>{c.subject}</strong> - {c.name || 'Unnamed'}: {c.confidence} <span className="profile-date">({formatDate(c.last_seen)})</span>
               </li>
             ))}
           </ul>
@@ -65,7 +68,7 @@ function ProfilePage({ setJwt }) {
           <ul>
             {reflection.signals.map((sig, i) => (
               <li key={i}>
-                <strong>{sig.type}</strong> <span style={{color:'#888', fontSize:'0.9em'}}>{new Date(sig.timestamp).toLocaleString()}</span>
+                <strong>{sig.type}</strong> <span className="profile-date">{formatDateTime(sig.timestamp)}</span>
               </li>
             ))}
           </ul>

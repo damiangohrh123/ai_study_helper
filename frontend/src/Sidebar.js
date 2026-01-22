@@ -10,8 +10,12 @@ function Sidebar({
   setSelectedSession,
   handleNewChat,
   ThemeToggle,
+  theme,
+  setTheme,
   handleLogout,
-  setJwt
+  setJwt,
+  activeView,
+  setActiveView
 }) {
 
   const [menuOpenId, setMenuOpenId] = useState(null);
@@ -86,8 +90,11 @@ function Sidebar({
         {sessions.map(session => (
           <li key={session.id} className="sidebar-list-item" style={{ position: 'relative' }}>
             <button
-              className={`sidebar-chat-btn${selectedSession === session.id ? ' selected' : ''}`}
-              onClick={() => setSelectedSession(session.id)}
+              className={`sidebar-chat-btn${activeView === 'chat' && selectedSession === session.id ? ' selected' : ''}`}
+              onClick={() => {
+                setActiveView('chat');
+                setSelectedSession(session.id);
+              }}
               style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
             >
               <span>{session.title || 'New Chat'}</span>
@@ -123,12 +130,12 @@ function Sidebar({
       <button
         className="sidebar-profile-btn"
         style={{ width: '100%', marginTop: 12 }}
-        onClick={() => setSelectedSession('profile')}
+        onClick={() => setActiveView('profile')}
       >
         Profile
       </button>
       <div className="sidebar-bottom">
-        <ThemeToggle />
+        <ThemeToggle theme={theme} setTheme={setTheme} />
         <button onClick={handleLogout} className="logout-btn" style={{ width: '100%' }}>
           Logout
         </button>
