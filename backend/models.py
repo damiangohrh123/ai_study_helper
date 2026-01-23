@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Text
 from sqlalchemy.orm import relationship
+import sqlalchemy as sa
 from db import Base
 
 class User(Base):
@@ -10,8 +11,8 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=True)              # user's email address
     password_hash = Column(String, nullable=True)                               # hashed password for authentication
     google_id = Column(String, unique=True, index=True, nullable=True)          # Google OAuth ID
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)       # account creation timestamp
-    last_active = Column(DateTime(timezone=True), default=datetime.utcnow)      # last active timestamp
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))       # account creation timestamp
+    last_active = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))      # last active timestamp
 
     chats = relationship("ChatHistory", back_populates="user")                  # user's chat history
     chat_sessions = relationship("ChatSession", back_populates="user")          # user's chat sessions
@@ -24,7 +25,7 @@ class RefreshToken(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)           # ID of the user this refresh token belongs to
     token_hash = Column(String, nullable=False)                                 # hashed refresh token
     expires_at = Column(DateTime(timezone=True), nullable=False)                # expiration timestamp of the refresh token
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)       # creation timestamp
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))       # creation timestamp
     revoked_at = Column(DateTime(timezone=True), nullable=True)                 # timestamp when token was revoked (null = active)
 
     user = relationship("User", back_populates="refresh_tokens")                # reference to the User
@@ -35,7 +36,7 @@ class ChatSession(Base):
     id = Column(Integer, primary_key=True, index=True)                          # unique chat session ID
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)           # ID of the user who owns this session
     title = Column(String, default="New Chat")                                  # title of the chat session                
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)       # session creation timestamp
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))       # session creation timestamp
     summary = Column(Text, nullable=True)                                       # summary of the chat session (for LLM context)
     summary_up_to_message_id = Column(Integer, nullable=True)                   # ID of the last message included in the summary
 
@@ -50,7 +51,7 @@ class ChatHistory(Base):
     chat_session_id = Column(Integer, ForeignKey("chat_sessions.id"), nullable=True)  # ID of the chat session
     message = Column(Text)                                                            # content of the message
     sender = Column(String)                                                           # 'user' or 'ai'
-    timestamp = Column(DateTime(timezone=True), default=datetime.utcnow)              # message timestamp
+    timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))              # message timestamp
 
     user = relationship("User", back_populates="chats")                               # reference to the User
     chat_session = relationship("ChatSession", back_populates="messages")             # reference to the ChatSession
@@ -62,7 +63,7 @@ class SubjectCluster(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)        # ID of the user this subject belongs to
     subject = Column(String, nullable=False)                                 # subject name (e.g., "Math", "Physics")
     learning_skill = Column(String, nullable=False)                          # user's skill level in the subject ('Weak', 'Improving', 'Strong')
-    last_updated = Column(DateTime(timezone=True), default=datetime.utcnow)  # last time this subject cluster was updated
+    last_updated = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))  # last time this subject cluster was updated
 
 class ConceptCluster(Base):
     __tablename__ = "concept_clusters"
@@ -70,9 +71,9 @@ class ConceptCluster(Base):
     id = Column(Integer, primary_key=True)                                # unique concept cluster ID
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)     # ID of the user this concept belongs to
     subject = Column(String, nullable=False)                              # subject this concept is associated with
-    embedding = Column(String, nullable=False)                            # vector/embedding representation of the concept
+    embedding = Column(sa.LargeBinary, nullable=False)                    # vector/embedding representation of the concept (binary)
     name = Column(String, nullable=True)                                  # optional human-readable concept name
-    confidence = Column(String, nullable=False)                           # confidence level for user understanding
+    confidence = Column(String, nullable=False, default="Weak")          # confidence level for user understanding
     last_seen = Column(DateTime(timezone=True), default=datetime.utcnow)  # last time this concept appeared in interaction
 
 class InteractionSignal(Base):
@@ -81,5 +82,5 @@ class InteractionSignal(Base):
     id = Column(Integer, primary_key=True)                                      # unique interaction signal ID
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)           # ID of the user who generated the signal
     type = Column(String, nullable=False)                                       # type of signal (e.g., 'follow_up', 'self_correction')
-    timestamp = Column(DateTime(timezone=True), default=datetime.utcnow)        # time when the signal occurred
+    timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))        # time when the signal occurred
     message_id = Column(Integer, ForeignKey("chat_history.id"), nullable=True)  # related chat message (if applicable)
