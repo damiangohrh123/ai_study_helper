@@ -74,6 +74,7 @@ class ConceptCluster(Base):
     embedding = Column(sa.LargeBinary, nullable=False)                    # vector/embedding representation of the concept (binary)
     name = Column(String, nullable=True)                                  # optional human-readable concept name
     confidence = Column(String, nullable=False, default="Weak")          # confidence level for user understanding
+    confidence_score = Column(sa.Float, nullable=False, default=0.0)      # numeric confidence score for adaptive learning
     last_seen = Column(DateTime(timezone=True), default=datetime.utcnow)  # last time this concept appeared in interaction
 
 class InteractionSignal(Base):
