@@ -125,7 +125,7 @@ async def build_llm_content(chat_session, window_rows, user_msg=None, file=None)
     content = []
 
     # System prompt
-    content.append(SystemMessage(content=textwrap.dedent("""
+    system_prompt_text = textwrap.dedent("""
         You are a helpful tutor.
         Formatting rules:
         - Inline math: $a^2 + b^2 = c^2$
@@ -134,18 +134,21 @@ async def build_llm_content(chat_session, window_rows, user_msg=None, file=None)
         - Never bold math
         - LaTeX must compile
         - If no math is needed, answer normally
-    """)))
+    """)
+    content.append(SystemMessage(content=system_prompt_text))
 
     # Summary
-    if chat_session.summary:
-        content.append(SystemMessage(content=f"Summary of previous conversation: {chat_session.summary}"))
+    summary_text = chat_session.summary or "[empty]"
+    content.append(SystemMessage(content=f"Summary of previous conversation: {summary_text}"))
 
-    # Window messages
+    # Window messages (history)
+    history_texts = []
     for row in window_rows:
         msg = preprocess_text(row.message or "")
         if not msg:
             continue
         sender = (row.sender or "").lower()
+        history_texts.append(f"{sender}: {msg}")
         if sender == "user":
             content.append(HumanMessage(content=msg))
         elif sender in ("ai", "assistant", "bot"):
@@ -162,14 +165,26 @@ async def build_llm_content(chat_session, window_rows, user_msg=None, file=None)
                 msg = encoding_chat.decode(tokens[:USER_MAX_TOKENS]) + "..."
             content.append(HumanMessage(content=msg))
 
-    # File
+    # Optional: file
     if file:
         image_bytes = await file.read()
-        await file.seek(0)  # Allow file to be re-read later if needed. (seek(0) moves pointer back to start)
+        await file.seek(0)
         b64 = base64.b64encode(image_bytes).decode()
         mime = file.content_type or "image/png"
         image_dict = {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
         content.append(HumanMessage(content=[image_dict]))
+
+    # ------------------ Log everything for debugging ------------------
+    log_parts = [
+        f"System Prompt:\n{system_prompt_text}",
+        f"Summary:\n{summary_text}",
+    ]
+    if history_texts:
+        log_parts.append("History:\n" + "\n".join(history_texts))
+    if user_msg:
+        log_parts.append(f"User Input:\n{user_msg}")
+    logging.info("\n--- LLM Full Input ---\n" + "\n\n".join(log_parts) + "\n---------------------")
+
     return content
 
 # Helper to save chat messages (user/ai)

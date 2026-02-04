@@ -24,6 +24,7 @@ import asyncio
 import numpy as np
 import json
 import re
+import logging
 from datetime import datetime, timezone
 from sqlalchemy import select
 
@@ -220,6 +221,7 @@ async def process_learning_message(db, user_id: int, message: str, message_id: i
     if best_cluster and similarity > SIMILARITY_THRESHOLD:
         update_concept_confidence(best_cluster, signals, now)
         subject = best_cluster.subject
+        concept_name = best_cluster.name
     else:
         # New concept → classify
         subject, name = await classify_and_name(message)
@@ -235,6 +237,10 @@ async def process_learning_message(db, user_id: int, message: str, message_id: i
             name=(name or "Concept")[:32],
         )
         db.add(best_cluster)
+        concept_name = best_cluster.name
+
+    # Logging input, subject, and concept
+    logging.info(f"Input: {message} | Subject: {subject} | Concept: {concept_name}")
 
     # 4. Load or create subject cluster
     result = await db.execute(
