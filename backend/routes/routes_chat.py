@@ -1,25 +1,31 @@
-import os, logging, base64, textwrap, re
+# Standard library
+import base64
+import logging
+import os
+import re
+import textwrap
+from collections import deque
 from datetime import datetime, timezone
 
-from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Path, Body
-from fastapi.responses import JSONResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, desc
-
+# Third-party
 import tiktoken
-from langchain_openai import ChatOpenAI
+from dotenv import load_dotenv
+from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException, Path, Query, UploadFile)
+from typing import Optional, List, Dict, Tuple, Union
+from fastapi.responses import JSONResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from collections import deque
+from langchain_openai import ChatOpenAI
+from sqlalchemy import delete, desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import User, ChatHistory, ChatSession
-from schemas import ChatSessionCreate, ChatSessionOut
-from deps import get_db
+# Local application
 from auth import get_current_user
-
+from deps import get_db
 from learning import process_learning_message
+from models import ChatHistory, ChatSession, User
+from schemas import ChatSessionCreate, ChatSessionOut
 
-load_dotenv()
+load_dotenv(override=False)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -54,7 +60,7 @@ RESPONSE_RESERVE_TOKENS = 1000
 
 
 # ------------------------------------------------ Helpers ------------------------------------------------ #
-async def get_user_chat_session(session_id: int, user: User, db: AsyncSession):
+async def get_user_chat_session(session_id: int, user: User, db: AsyncSession) -> ChatSession:
     """Fetch a chat session by ID for a user; raises 404 if not found."""
     result = await db.execute(
         select(ChatSession).where(
@@ -66,7 +72,7 @@ async def get_user_chat_session(session_id: int, user: User, db: AsyncSession):
         raise HTTPException(status_code=404, detail="Chat session not found.")
     return session
 
-def preprocess_text(text):
+def preprocess_text(text: Optional[str]) -> str:
     """Clean and normalize text for LLM input (removes non-printable chars, trims whitespace, collapses spaces/newlines)."""
     if not text:
         return ''
@@ -77,12 +83,12 @@ def preprocess_text(text):
     return text.strip()                                           # Remove leading/trailing whitespace overall
 
 async def summarize_incremental(
-    session_id,                  # Identifies which chat this summary belongs to
-    last_summary,                # The previous summary text
-    last_summary_id,             # The message ID up to which the last summary was made
-    new_messages,                # A list of new ChatHistory rows that happened after the last summary
-    db: AsyncSession             # Database session
-):
+    session_id: int,                  # Identifies which chat this summary belongs to
+    last_summary: Optional[str],      # The previous summary text
+    last_summary_id: int,             # The message ID up to which the last summary was made
+    new_messages: List[ChatHistory],  # A list of new ChatHistory rows that happened after the last summary
+    db: AsyncSession                  # Database session
+) -> Tuple[str, int]:
     """Incrementally update a chat session summary with new messages using the summarization LLM."""
     # If there are no new messages, do nothing
     if not new_messages:
@@ -120,7 +126,12 @@ async def summarize_incremental(
     return summary, new_messages[-1].id
 
 # Helper to build LLM content window
-async def build_llm_content(chat_session, window_rows, user_msg=None, file=None):
+async def build_llm_content(
+    chat_session: ChatSession,
+    window_rows: List[ChatHistory],
+    user_msg: Optional[str] = None,
+    file: Optional[UploadFile] = None
+) -> List[Union[SystemMessage, HumanMessage, AIMessage]]:
     """Build the list of messages for the LLM, including system prompt, conversation summary, history, user input, and optional file."""
     content = []
 
@@ -187,18 +198,6 @@ async def build_llm_content(chat_session, window_rows, user_msg=None, file=None)
 
     return content
 
-# Helper to save chat messages (user/ai)
-async def save_chat_messages(db, session_id, user_id, messages: list[tuple[str, str]]):
-    for sender, msg in messages:
-        if msg:
-            db.add(ChatHistory(
-                user_id=user_id,
-                chat_session_id=session_id,
-                message=msg,
-                sender=sender,
-            ))
-    await db.commit()
-
 # ------------------------------------------------ Chat Session Endpoints ------------------------------------------------ #
 @router.post("/sessions", response_model=ChatSessionOut)
 async def create_chat_session(
@@ -247,7 +246,7 @@ async def delete_chat_session(
     await db.commit()
     return {"success": True}
 
-@router.get("/sessions", response_model=list[ChatSessionOut])
+@router.get("/sessions", response_model=List[ChatSessionOut])
 async def list_chat_sessions(
     db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)
 ):
@@ -262,10 +261,10 @@ async def list_chat_sessions(
 
 @router.get("/history")
 async def get_chat_history(
-    session_id: int = Query(None),
+    session_id: Optional[int] = Query(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> List[Dict[str, str]]:
     """Retrieve chat history for the current user. Can filter by session ID."""
     query = select(ChatHistory).where(ChatHistory.user_id == current_user.id)
     if session_id is not None:
@@ -285,12 +284,12 @@ async def get_chat_history(
 # ------------------------------------------------ Ask Endpoint ------------------------------------------------ #
 @router.post("/ask")
 async def ask(
-    message: str = Form(None),
-    file: UploadFile = File(None),
-    session_id: int = Form(None),
+    message: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    session_id: Optional[int] = Form(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-):
+) -> Dict[str, str]:
     """Send a message (and optional file) to the AI for a specific chat session."""
 
     # Check for missing session ID
