@@ -77,11 +77,3 @@ class ConceptCluster(Base):
     confidence_score = Column(sa.Float, nullable=False, default=0.0)      # numeric confidence score for adaptive learning
     last_seen = Column(DateTime(timezone=True), default=datetime.utcnow)  # last time this concept appeared in interaction
 
-class InteractionSignal(Base):
-    __tablename__ = "interaction_signals"
-
-    id = Column(Integer, primary_key=True)                                      # unique interaction signal ID
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)           # ID of the user who generated the signal
-    type = Column(String, nullable=False)                                       # type of signal (e.g., 'follow_up', 'self_correction')
-    timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))        # time when the signal occurred
-    message_id = Column(Integer, ForeignKey("chat_history.id"), nullable=True)  # related chat message (if applicable)
