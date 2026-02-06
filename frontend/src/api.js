@@ -118,18 +118,6 @@ export async function fetchProgress(setJwt, logout) {
   return res.json();
 }
 
-// Fetch recent reflection signals
-// Throws SessionExpiredError if session expired (UI should handle)
-export async function fetchReflection(setJwt, logout, days = 7) {
-  const res = await fetchWithAuth(
-    `${BASE_URL}/progress/reflection?days=${days}`,
-    {},
-    setJwt,
-    logout
-  );
-  return res.json();
-}
-
 // Custom error for session expiration
 export class SessionExpiredError extends Error {
   constructor(message = 'Session expired. Please log in again.') {

@@ -1,11 +1,10 @@
 // ProfilePage.js
 // Shows user progress, concept mastery, and recent learning activity.
 import React, { useEffect, useState } from 'react';
-import { fetchProgress, fetchReflection } from './api';
+import { fetchProgress } from './api';
 
 function ProfilePage({ setJwt }) {
   const [progress, setProgress] = useState(null);
-  const [reflection, setReflection] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -14,12 +13,8 @@ function ProfilePage({ setJwt }) {
       setLoading(true);
       setError(null);
       try {
-        const [progressData, reflectionData] = await Promise.all([
-          fetchProgress(setJwt),
-          fetchReflection(setJwt),
-        ]);
+        const progressData = await fetchProgress(setJwt);
         setProgress(progressData);
-        setReflection(reflectionData);
       } catch (err) {
         setError(err.message || 'Failed to load profile data');
       } finally {
@@ -61,18 +56,6 @@ function ProfilePage({ setJwt }) {
             ))}
           </ul>
         ) : <div>No concept data yet.</div>}
-      </section>
-      <section className="profile-section">
-        <h3>Recent Learning Activity</h3>
-        {reflection?.signals?.length ? (
-          <ul>
-            {reflection.signals.map((sig, i) => (
-              <li key={i}>
-                <strong>{sig.type}</strong> <span className="profile-date">{formatDateTime(sig.timestamp)}</span>
-              </li>
-            ))}
-          </ul>
-        ) : <div>No recent activity.</div>}
       </section>
     </div>
   );
