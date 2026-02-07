@@ -385,7 +385,7 @@ async def ask(
 
         # Learning analytics only for user message
         if message:
-            await process_learning_message(db, current_user.id, message, rows_to_add[0].id)
+            await process_learning_message(db, current_user.id, message)
 
         await db.commit()
         return {"response": response.content}

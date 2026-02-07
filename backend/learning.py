@@ -9,7 +9,7 @@ Key concepts:
         - a confidence score indicating the user's mastery level
 
 - Confidence: Numeric score per cluster, mapped to "Weak", "Improving", "Strong".
-    Cluster scores are updated using pattern-based logic (review frequency, time spacing, semantic similarity, and cross-topic links) and decay over time.
+    Cluster scores are updated using pattern-based logic (review frequency, time spacing, semantic similarity) and decay over time.
     Subject-level confidence is computed as the average of all clusters under that subject.
 """
 
@@ -21,12 +21,14 @@ import re
 import logging
 from datetime import datetime, timezone
 from sqlalchemy import select
-from typing import List
+from typing import Optional
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import SubjectCluster, ConceptCluster
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
+# ------------------------------------------------ Configuration ------------------------------------------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Embedding model for turning text into numeric vectors
@@ -43,11 +45,18 @@ LLM = ChatOpenAI(
 )
 
 SUBJECTS = {"Math", "Science", "English", "General"}
-
 SIMILARITY_THRESHOLD = 0.85
 DECAY_PER_DAY = 0.1
+MAX_CONFIDENCE = 6.0
 
-# ------------------------------------------------ Embeddings ------------------------------------------------
+# ------------------------------------------------ Utilities ------------------------------------------------
+def score_to_confidence(score: float) -> str:
+    if score < 3:
+        return "Weak"
+    if score < 5:
+        return "Improving"
+    return "Strong"
+
 async def get_embedding(text: str) -> np.ndarray:
     """
     Get an embedding vector for the given text using OpenAI.
@@ -63,30 +72,26 @@ async def get_embedding(text: str) -> np.ndarray:
     vec = np.array(emb, dtype=np.float32) # Cast to float32 for consistency
     norm = np.linalg.norm(vec)
 
-    if norm == 0:
-        return vec  # extremely unlikely, but safe
-
-    return vec / norm
+    return vec if norm == 0 else vec / norm
 
 # ------------------------------------------------ Subject detection ------------------------------------------------
-async def classify_subject_and_concept(message: str) -> tuple[str, str]:
+async def classify_subject_and_concept(message: str) -> tuple[str, Optional[str]]:
     """
     Use a single LLM call to extract subject and concept name from a message.
     Returns: (subject, concept_name)
     """
-    if not message or not message.strip():
+    if not message.strip():
         return "General", None
 
     system_prompt = SystemMessage(
         content=(
-            "You are an educational assistant.\n"
-            "Given a user's message, do all of the following in one JSON object:\n"
-            "1) Classify the subject as one of: Math, Science, English, General.\n"
-            "2) Generate a concise concept name (max 5 words).\n"
-            "Respond ONLY in valid JSON like:\n"
+            "Classify the subject and name the concept.\n"
+            "Subjects: Math, Science, English, General.\n"
+            "Return JSON only:\n"
             '{ "subject": "Math", "concept_name": "Linear equations" }\n'
         )
     )
+
     user_prompt = HumanMessage(content=message[:500])
 
     loop = asyncio.get_running_loop()
@@ -94,29 +99,24 @@ async def classify_subject_and_concept(message: str) -> tuple[str, str]:
         None, lambda: LLM.invoke([system_prompt, user_prompt])
     )
 
-    subject = "General"
-    concept_name = None
     try:
-        match = re.search(r"\{.*\}", response.content, flags=re.DOTALL)
+        match = re.search(r"\{.*\}", response.content, re.DOTALL)
         if match:
-            data = json.loads(match.group(0))
-            subject = data.get("subject", subject)
-            concept_name = data.get("concept_name")
+            data = json.loads(match.group())
+            subject = data.get("subject", "General")
+            concept = data.get("concept_name")
+        else:
+            subject, concept = "General", None
     except Exception:
-        pass
-    if subject not in SUBJECTS:
-        subject = "General"
-    return subject, concept_name
+        subject, concept = "General", None
 
-def score_to_confidence(score: float) -> str:
-    if score < 3:
-        return "Weak"
-    if score < 5:
-        return "Improving"
-    return "Strong"
+    return (subject if subject in SUBJECTS else "General"), concept
 
 # ------------------------------------------------ Similarity matching ------------------------------------------------
-def find_best_cluster(embedding: np.ndarray, clusters: list) -> tuple[object | None, float]:
+def find_best_cluster(embedding: np.ndarray, clusters: list[ConceptCluster]) -> tuple[Optional[ConceptCluster], float]:
+    """
+    Return the most similar ConceptCluster and its cosine similarity score.
+    """
     if not clusters:
         return None, 0.0
 
@@ -134,58 +134,121 @@ def find_best_cluster(embedding: np.ndarray, clusters: list) -> tuple[object | N
     return clusters[idx], float(sims[idx])
 
 # ------------------------------------------------ Concept confidence update ------------------------------------------------
-def update_concept_confidence(cluster, now: datetime):
-    days_passed = (now - cluster.last_seen).days
+def update_concept_confidence(cluster: ConceptCluster, similarity: float, now: datetime) -> None:
+    """
+    Pattern-based confidence update:
+    - decay
+    - revisit reinforcement
+    - semantic strength
+    - spacing bonus
+    """
+    days = (now - cluster.last_seen).days
 
-    if days_passed > 1:
-        cluster.confidence_score = max(0, cluster.confidence_score - DECAY_PER_DAY * days_passed)
+    # 1. Decay
+    cluster.confidence_score = max(0.0, cluster.confidence_score - DECAY_PER_DAY * days)
 
-    # Pattern-based confidence update logic would go here
+    # 2. Reinforcement by revisit, and similarity boost
+    cluster.confidence_score += 0.5
+    cluster.confidence_score += similarity * 0.8
+
+    # 3. Spacing bonus (if revisited after 2-14 days)
+    if 2 <= days <= 14:
+        cluster.confidence_score += 1.0
+
+    # 4. Soft cap + update confidence level + record time of this interaction
+    cluster.confidence_score = min(cluster.confidence_score, MAX_CONFIDENCE)
+    cluster.confidence = score_to_confidence(cluster.confidence_score)
     cluster.last_seen = now
 
 # ------------------------------------------------ Subject confidence update ------------------------------------------------
-def recompute_subject_confidence(subject_cluster, clusters: list, subject: str, best_cluster=None):
+async def recompute_subject_confidence(db: AsyncSession, user_id: int, subject: str, clusters: Optional[list[ConceptCluster]] = None) -> Optional[SubjectCluster]:
     """
-    Recompute the subject-level confidence based on all clusters under the subject.
-    Ensures best_cluster is included once without double-counting.
+    Recompute or create the subject-level confidence for a user.
+
+    - If clusters are provided, only those are used.
+    - Otherwise, fetch all clusters for this user and subject from the DB.
     """
-    relevant = [
-        c for c in clusters
-        if c.subject == subject and c is not best_cluster
-    ]
+    
+    # 1. If clusters not provided, fetch them
+    if clusters is None:
+        result = await db.execute(
+            select(ConceptCluster).where(
+                ConceptCluster.user_id == user_id,
+                ConceptCluster.subject == subject
+            )
+        )
+        clusters = result.scalars().all()
 
-    if best_cluster and best_cluster.subject == subject:
-        relevant.append(best_cluster)
+    if not clusters:
+        return None
 
-    if not relevant:
-        return
+    # 2. Compute average confidence score across all clusters
+    avg_score = sum(c.confidence_score for c in clusters) / len(clusters)
 
-    avg_score = sum(c.confidence_score for c in relevant) / len(relevant)
-    subject_cluster.learning_skill = score_to_confidence(avg_score)
+    # 3. Fetch the SubjectCluster, if it exists
+    result = await db.execute(
+        select(SubjectCluster).where(
+            SubjectCluster.user_id == user_id,
+            SubjectCluster.subject == subject
+        )
+    )
+    subject_cluster = result.scalars().first()
+
+    if subject_cluster:
+        subject_cluster.learning_skill = score_to_confidence(avg_score)
+    else:
+        subject_cluster = SubjectCluster(
+            user_id=user_id,
+            subject=subject,
+            learning_skill=score_to_confidence(avg_score)
+        )
+        db.add(subject_cluster)
+
+    return subject_cluster
 
 # --------------------------------- Main message processing ---------------------------------
-async def process_learning_message(db, user_id: int, message: str, message_id: int = None):
+async def process_learning_message(db: AsyncSession, user_id: int, message: str) -> Optional[SubjectCluster]:
+    """
+    Main learning pipeline (optimized):
+    1. Embed message
+    2. Determine subject & concept
+    3. Load only relevant subject clusters
+    4. Match or create concept cluster
+    5. Update concept confidence
+    6. Recompute subject confidence
+    7. Commit changes
+    """
+    # If message is empty, skip processing
+    if not message.strip():
+        return None
+    
     now = datetime.now(timezone.utc)
 
     # 1. Get embeddings
     embedding = await get_embedding(message)
 
-    # 2. Load user's concept clusters
-    result = await db.execute(select(ConceptCluster).where(ConceptCluster.user_id == user_id))
-    clusters = result.scalars().all()
+    # 2. Classify subject and concept name first
+    subject, name = await classify_subject_and_concept(message)
 
-    # 3. Find best matching cluster
-    best_cluster, similarity = find_best_cluster(embedding, clusters)
+    # 3. Load clusters only for this subject
+    result = await db.execute(
+        select(ConceptCluster).where(
+            ConceptCluster.user_id == user_id,
+            ConceptCluster.subject == subject
+        )
+    )
+    subject_clusters = result.scalars().all()
 
+    # 4. Find the best cluster among this subject
+    best_cluster, similarity = find_best_cluster(embedding, subject_clusters)
+
+    # 5. Update existing cluster or create new one
     if best_cluster and similarity > SIMILARITY_THRESHOLD:
-        update_concept_confidence(best_cluster, now)
-        subject = best_cluster.subject
+        update_concept_confidence(best_cluster, similarity, now)
         concept_name = best_cluster.name
     else:
-        # New concept → classify subject and concept name in one call
-        subject, name = await classify_subject_and_concept(message)
-        initial_score = 0.5  # Pattern-based scoring can be added here
-
+        # Use similarity even if below threshold for initial score
+        initial_score = 0.5 + (similarity * 0.5)
         best_cluster = ConceptCluster(
             user_id=user_id,
             subject=subject,
@@ -196,34 +259,14 @@ async def process_learning_message(db, user_id: int, message: str, message_id: i
             name=(name or "Concept")[:32],
         )
         db.add(best_cluster)
+        subject_clusters.append(best_cluster)  # include new cluster for recompute
         concept_name = best_cluster.name
 
-    # Logging input, subject, and concept
     logging.info(f"Input: {message} | Subject: {subject} | Concept: {concept_name}")
 
-    # 4. Load or create subject cluster
-    result = await db.execute(
-        select(SubjectCluster).where(
-            SubjectCluster.user_id == user_id,
-            SubjectCluster.subject == subject,
-        )
-    )
-    subject_cluster = result.scalars().first()
+    # 6. Recompute subject confidence (handles creation/update)
+    subject_cluster = await recompute_subject_confidence(db, user_id, subject, subject_clusters)
 
-    if not subject_cluster:
-        subject_cluster = SubjectCluster(
-            user_id=user_id,
-            subject=subject,
-            learning_skill="Weak",
-            last_updated=now,
-        )
-        db.add(subject_cluster)
-
-    # 5. Update subject confidence
-    recompute_subject_confidence(subject_cluster, clusters, subject, best_cluster=best_cluster)
-    subject_cluster.last_updated = now
-
-    # 6. Commit all changes
+    # 7. Commit everything
     await db.commit()
-    
     return subject_cluster
