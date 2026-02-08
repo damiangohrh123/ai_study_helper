@@ -23,39 +23,89 @@ function ProfilePage({ setJwt }) {
     })();
   }, [setJwt]);
 
-  // Date formatting helpers
+  // ---------------- Helpers ----------------
   const formatDate = d => new Date(d).toLocaleDateString();
-  const formatDateTime = d => new Date(d).toLocaleString();
 
+  const formatDelta = delta => {
+    if (delta === undefined || delta === null) return null;
+    if (delta > 0) return `▲ ${delta.toFixed(1)}`;
+    if (delta < 0) return `▼ ${Math.abs(delta).toFixed(1)}`;
+    return '-';
+  };
+
+  const deltaClass = delta => {
+    if (delta > 0) return 'delta-positive';
+    if (delta < 0) return 'delta-negative';
+    return 'delta-neutral';
+  };
+
+  // ---------------- Render states ----------------
   if (loading) return <div className="profile-loading">Loading profile...</div>;
   if (error) return <div className="profile-error">{error}</div>;
 
+  // ---------------- UI ----------------
   return (
     <div className="profile-page">
       <h2>My Progress</h2>
+
+      {/* Subjects */}
       <section className="profile-section">
         <h3>Subjects</h3>
         {progress?.subjects?.length ? (
-          <ul>
+          <ul className="profile-list">
             {progress.subjects.map((s, i) => (
-              <li key={i}>
-                <strong>{s.subject}:</strong> {s.learning_skill} <span className="profile-date">({formatDate(s.last_updated)})</span>
+              <li key={i} className="profile-item">
+                <div className="profile-main">
+                  <strong>{s.subject}</strong>: {s.learning_skill}
+                </div>
+
+                <div className="profile-meta">
+                  <span className="profile-date">
+                    {formatDate(s.last_updated)}
+                  </span>
+
+                  {formatDelta(s.learning_delta) && (
+                    <span className={`profile-delta ${deltaClass(s.learning_delta)}`}>
+                      {formatDelta(s.learning_delta)}
+                    </span>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
-        ) : <div>No subject data yet.</div>}
+        ) : (
+          <div>No subject data yet.</div>
+        )}
       </section>
+
+      {/* Concepts */}
       <section className="profile-section">
         <h3>Concepts</h3>
         {progress?.concepts?.length ? (
-          <ul>
+          <ul className="profile-list">
             {progress.concepts.map((c, i) => (
-              <li key={i}>
-                <strong>{c.subject}</strong> - {c.name || 'Unnamed'}: {c.confidence} <span className="profile-date">({formatDate(c.last_seen)})</span>
+              <li key={i} className="profile-item">
+                <div className="profile-main">
+                  <strong>{c.subject}</strong> — {c.name || 'Unnamed'}: {c.confidence}
+                </div>
+
+                <div className="profile-meta">
+                  <span className="profile-date">
+                    {formatDate(c.last_seen)}
+                  </span>
+
+                  {formatDelta(c.confidence_delta) && (
+                    <span className={`profile-delta ${deltaClass(c.confidence_delta)}`}>
+                      {formatDelta(c.confidence_delta)}
+                    </span>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
-        ) : <div>No concept data yet.</div>}
+        ) : (
+          <div>No concept data yet.</div>
+        )}
       </section>
     </div>
   );

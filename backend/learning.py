@@ -134,13 +134,14 @@ def find_best_cluster(embedding: np.ndarray, clusters: list[ConceptCluster]) -> 
     return clusters[idx], float(sims[idx])
 
 # ------------------------------------------------ Concept confidence update ------------------------------------------------
-def update_concept_confidence(cluster: ConceptCluster, similarity: float, now: datetime) -> None:
+def update_concept_confidence(cluster: ConceptCluster, similarity: float, now: datetime, delta_threshold_days: int = 7) -> None:
     """
     Pattern-based confidence update:
     - decay
     - revisit reinforcement
     - semantic strength
     - spacing bonus
+    - delta snapshot
     """
     days = (now - cluster.last_seen).days
 
@@ -158,10 +159,23 @@ def update_concept_confidence(cluster: ConceptCluster, similarity: float, now: d
     # 4. Soft cap + update confidence level + record time of this interaction
     cluster.confidence_score = min(cluster.confidence_score, MAX_CONFIDENCE)
     cluster.confidence = score_to_confidence(cluster.confidence_score)
+
+    # 5. Update confidence delta if threshold reached
+    if (now - cluster.delta_since).days >= delta_threshold_days:
+        cluster.confidence_delta = cluster.confidence_score - cluster.confidence_delta
+        cluster.delta_since = now
+
+    # 6. Record last seen
     cluster.last_seen = now
 
 # ------------------------------------------------ Subject confidence update ------------------------------------------------
-async def recompute_subject_confidence(db: AsyncSession, user_id: int, subject: str, clusters: Optional[list[ConceptCluster]] = None) -> Optional[SubjectCluster]:
+async def recompute_subject_confidence(
+    db: AsyncSession,
+    user_id: int,
+    subject: str,
+    clusters: Optional[list[ConceptCluster]] = None,
+    delta_threshold_days: int = 7
+) -> Optional[SubjectCluster]:
     """
     Recompute or create the subject-level confidence for a user.
 
@@ -185,7 +199,7 @@ async def recompute_subject_confidence(db: AsyncSession, user_id: int, subject: 
     # 2. Compute average confidence score across all clusters
     avg_score = sum(c.confidence_score for c in clusters) / len(clusters)
 
-    # 3. Fetch the SubjectCluster, if it exists
+    # 3. Fetch or create subject cluster
     result = await db.execute(
         select(SubjectCluster).where(
             SubjectCluster.user_id == user_id,
@@ -194,9 +208,20 @@ async def recompute_subject_confidence(db: AsyncSession, user_id: int, subject: 
     )
     subject_cluster = result.scalars().first()
 
+    now = datetime.now(timezone.utc)
+
     if subject_cluster:
+        # Update learning skill
         subject_cluster.learning_skill = score_to_confidence(avg_score)
+
+        # Update delta if threshold reached or delta_since is None
+        if not subject_cluster.delta_since or (now - subject_cluster.delta_since).days >= delta_threshold_days:
+            subject_cluster.learning_delta = avg_score - (subject_cluster.learning_delta or 0.0)
+            subject_cluster.delta_since = now
+
+        subject_cluster.last_updated = now
     else:
+        # Create new subject cluster
         subject_cluster = SubjectCluster(
             user_id=user_id,
             subject=subject,
@@ -242,7 +267,7 @@ async def process_learning_message(db: AsyncSession, user_id: int, message: str)
     # 4. Find the best cluster among this subject
     best_cluster, similarity = find_best_cluster(embedding, subject_clusters)
 
-    # 5. Update existing cluster or create new one
+    # 5. Update cluster or create new one
     if best_cluster and similarity > SIMILARITY_THRESHOLD:
         update_concept_confidence(best_cluster, similarity, now)
         concept_name = best_cluster.name
@@ -256,6 +281,8 @@ async def process_learning_message(db: AsyncSession, user_id: int, message: str)
             confidence_score=initial_score,
             confidence=score_to_confidence(initial_score),
             last_seen=now,
+            confidence_delta=0.0,
+            delta_since=now,   
             name=(name or "Concept")[:32],
         )
         db.add(best_cluster)
