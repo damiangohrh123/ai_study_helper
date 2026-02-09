@@ -1,7 +1,6 @@
 from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Text
 from sqlalchemy.orm import relationship
-import sqlalchemy as sa
 from db import Base
 
 class User(Base):
@@ -55,29 +54,3 @@ class ChatHistory(Base):
 
     user = relationship("User", back_populates="chats")                                      # reference to the User
     chat_session = relationship("ChatSession", back_populates="messages")                    # reference to the ChatSession
-
-class SubjectCluster(Base):
-    __tablename__ = "subject_clusters"
-
-    id = Column(Integer, primary_key=True)                                                      # unique subject cluster ID
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)                           # ID of the user this subject belongs to
-    subject = Column(String, nullable=False)                                                    # subject name (e.g., "Math", "Physics")
-    learning_skill = Column(String, nullable=False)                                             # user's skill level in the subject ('Weak', 'Improving', 'Strong')
-    last_updated = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))  # last time this subject cluster was updated
-    learning_delta = Column(sa.Float, nullable=False, default=0.0)                              # numeric change in subject confidence
-    delta_since = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))   # timestamp of last snapshot
-
-class ConceptCluster(Base):
-    __tablename__ = "concept_clusters"
-
-    id = Column(Integer, primary_key=True)                                                     # unique concept cluster ID
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)                          # ID of the user this concept belongs to
-    subject = Column(String, nullable=False)                                                   # subject this concept is associated with
-    embedding = Column(sa.LargeBinary, nullable=False)                                         # vector/embedding representation of the concept (binary)
-    name = Column(String, nullable=True)                                                       # optional human-readable concept name
-    confidence = Column(String, nullable=False, default="Weak")                                # confidence level for user understanding
-    confidence_score = Column(sa.Float, nullable=False, default=0.0)                           # numeric confidence score for adaptive learning
-    last_seen = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))    # last time this concept appeared in interaction
-    confidence_delta = Column(sa.Float, nullable=False, default=0.0)                           # numeric change since last snapshot
-    delta_since = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))  # timestamp of last snapshot
-
