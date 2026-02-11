@@ -1,70 +1,57 @@
-# Standard library
 import base64
 import logging
 import os
 import re
 import textwrap
-from collections import deque
-from datetime import datetime, timezone
-
-# Third-party
-import tiktoken
 from dotenv import load_dotenv
-from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException, Path, Query, UploadFile)
-from typing import Optional, List, Dict, Tuple, Union
-from fastapi.responses import JSONResponse
+from fastapi import (APIRouter, HTTPException, UploadFile, Depends, Body, Path, Query, Form, File)
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional, List, Union
+import tiktoken
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from sqlalchemy import delete, desc, select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-# Local application
-from auth import get_current_user
 from deps import get_db
-from learning import process_learning_message
+from auth import get_current_user
 from models import ChatHistory, ChatSession, User
-from schemas import ChatSessionCreate, ChatSessionOut
 
+# ------------------------------------------------ App Setup ------------------------------------------------ #
 load_dotenv(override=False)
-
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Create a router for chat-related endpoints. Every route here will start with /chat
 router = APIRouter(prefix="/chat", tags=["chat"])
 
-# Main chat model (gpt-4o)
+# ------------------------------------------------ LLM Models ------------------------------------------------ #
+# Initialize the main language model (GPT-4o) for general chat/response tasks
 llm = ChatOpenAI(
     model="gpt-4o",
     openai_api_key=os.getenv("OPENAI_API_KEY")
 )
-
-# Cheap summarization model (gpt-4o-mini)
+# Initialize a smaller GPT-4o variant for summarization tasks
 llm_summarize = ChatOpenAI(
     model="gpt-4o-mini",
     temperature=0,
     openai_api_key=os.getenv("OPENAI_API_KEY")
 )
 
-# Token encodings (explicit, robust to model remapping)
-encoding_chat = tiktoken.get_encoding("o200k_base")  # gpt-4o
-encoding_summary = tiktoken.get_encoding("o200k_base")  # gpt-4o-mini
-
-# Token Limits
+# ------------------------------------------------ Token Handling ------------------------------------------------ #
+encoding_chat = tiktoken.get_encoding("o200k_base")
+encoding_summary = tiktoken.get_encoding("o200k_base")
 TOTAL_MODEL_TOKENS = 8000
-SYSTEM_PROMPT_TOKENS = 200
 SUMMARY_MAX_TOKENS = 500
 USER_MAX_TOKENS = 2000
 RESPONSE_RESERVE_TOKENS = 1000
 
-
 # ------------------------------------------------ Helpers ------------------------------------------------ #
 async def get_user_chat_session(session_id: int, user: User, db: AsyncSession) -> ChatSession:
-    """Fetch a chat session by ID for a user; raises 404 if not found."""
+    """
+    Return a chat session by ID, ensuring it belongs to the given user.
+    Raises 404 if the session does not exist.
+    """
     result = await db.execute(
         select(ChatSession).where(
-            ChatSession.id == session_id, ChatSession.user_id == user.id
+            ChatSession.id == session_id,
+            ChatSession.user_id == user.id
         )
     )
     session = result.scalar_one_or_none()
@@ -73,184 +60,134 @@ async def get_user_chat_session(session_id: int, user: User, db: AsyncSession) -
     return session
 
 def preprocess_text(text: Optional[str]) -> str:
-    """Clean and normalize text for LLM input (removes non-printable chars, trims whitespace, collapses spaces/newlines)."""
+    """
+    Clean and normalize input text for consistent processing.
+    """
     if not text:
-        return ''
-    text = ''.join(c for c in text if c.isprintable())            # Remove non-printable characters
-    text = re.sub(r'[ \t]+', ' ', text)                           # Collapse multiple spaces (but preserve newlines)
-    text = re.sub(r'\n{3,}', '\n\n', text)                        # Collapse 3+ newlines to 2 newlines
-    text = '\n'.join(line.strip() for line in text.splitlines())  # Remove leading/trailing whitespace on each line
-    return text.strip()                                           # Remove leading/trailing whitespace overall
+        return ""
+    text = "".join(c for c in text if c.isprintable())            # Remove non-printable characters
+    text = re.sub(r"[ \t]+", " ", text)                           # Collapse multiple spaces or tabs into a single space
+    text = re.sub(r"\n{3,}", "\n\n", text)                        # Limit excessive newlines to a maximum of two
+    text = "\n".join(line.strip() for line in text.splitlines())  # Strip leading and trailing whitespace from each line
+    return text.strip()                                           # Remove leading and trailing whitespace from the full text
 
 async def summarize_incremental(
-    session_id: int,                  # Identifies which chat this summary belongs to
-    last_summary: Optional[str],      # The previous summary text
-    last_summary_id: int,             # The message ID up to which the last summary was made
-    new_messages: List[ChatHistory],  # A list of new ChatHistory rows that happened after the last summary
-    db: AsyncSession                  # Database session
-) -> Tuple[str, int]:
-    """Incrementally update a chat session summary with new messages using the summarization LLM."""
-    # If there are no new messages, do nothing
+    last_summary: Optional[str],
+    last_summary_id: int,
+    new_messages: List[ChatHistory],
+) -> tuple[str, int]:
+    """
+    Incrementally update a chat summary using only new messages.
+    """
+
+    # If there are no new messages, return the existing summary unchanged
     if not new_messages:
         return last_summary, last_summary_id
 
-    # Concatenate only the new messages
-    new_text = "\n".join(f"{row.sender}: {preprocess_text(row.message or '')}" for row in new_messages)
-
-    # System prompt for summary constraints
-    system_prompt = SystemMessage(content=textwrap.dedent(f"""
-        You are a chat memory assistant. Update the running summary of a conversation by incorporating the new messages below into the previous summary. 
-        - Keep the summary concise (max {SUMMARY_MAX_TOKENS} tokens)
-        - Only include key facts, questions, and answers
-        - Do not repeat information
-        - Use neutral, factual language
-        - If the previous summary is empty, create a new summary
-        - If the new messages are trivial, you may keep the summary unchanged
-    """))
-
-    # Compose the prompt
-    prompt = (
-        f"Previous summary:\n{last_summary or '[empty]'}\n\n"
-        f"New messages:\n{new_text}\n\n"
-        f"Update the summary to include the new messages. Limit to 3-5 sentences."
+    # Format new messages as "sender: message" and preprocess their text
+    new_text = "\n".join(
+        f"{m.sender}: {preprocess_text(m.message or '')}"
+        for m in new_messages
     )
 
-    # Call the LLM
-    response = await llm_summarize.ainvoke([system_prompt, HumanMessage(content=prompt)])
-    
-    # Truncate summary to SUMMARY_MAX_TOKENS if needed
+    system_prompt = SystemMessage(content=textwrap.dedent(f"""
+        You are a chat memory assistant.
+        Keep summaries under {SUMMARY_MAX_TOKENS} tokens.
+        Only retain key facts and conclusions.
+    """))
+
+    prompt = (
+        f"Previous summary:\n{last_summary or '[empty]'}\n\n"
+        f"New messages:\n{new_text}"
+    )
+
+    response = await llm_summarize.ainvoke([
+        system_prompt,
+        HumanMessage(content=prompt)
+    ])
+
     summary = response.content.strip()
+
+    # Enforce token limit by truncating if necessary
     tokens = encoding_summary.encode(summary)
     if len(tokens) > SUMMARY_MAX_TOKENS:
-        summary = encoding_summary.decode(tokens[:SUMMARY_MAX_TOKENS]) + '...'
+        summary = encoding_summary.decode(tokens[:SUMMARY_MAX_TOKENS]) + "..."
+
+    # Return the updated summary and the ID of the last processed message
     return summary, new_messages[-1].id
 
-# Helper to build LLM content window
-async def build_llm_content(
-    chat_session: ChatSession,
-    window_rows: List[ChatHistory],
-    user_msg: Optional[str] = None,
-    file: Optional[UploadFile] = None
-) -> List[Union[SystemMessage, HumanMessage, AIMessage]]:
-    """Build the list of messages for the LLM, including system prompt, conversation summary, history, user input, and optional file."""
-    content = []
-
-    # System prompt
-    system_prompt_text = textwrap.dedent("""
+def build_system_prompt() -> SystemMessage:
+    return SystemMessage(content=textwrap.dedent("""
         You are a helpful tutor.
+        Default to clear, step-by-step explanations
+        unless the user explicitly asks for brevity.
+
         Formatting rules:
         - Inline math: $a^2 + b^2 = c^2$
         - Display math: $$ E = mc^2 $$
         - Never use \\( \\) or \\[ \\]
         - Never bold math
         - LaTeX must compile
-        - If no math is needed, answer normally
-    """)
-    content.append(SystemMessage(content=system_prompt_text))
+    """))
 
-    # Summary
-    summary_text = chat_session.summary or "[empty]"
-    content.append(SystemMessage(content=f"Summary of previous conversation: {summary_text}"))
+async def build_history_content(
+    chat_session: ChatSession,
+    window_rows: List[ChatHistory],
+    user_msg: Optional[str],
+    file: Optional[UploadFile]
+) -> List[Union[SystemMessage, HumanMessage, AIMessage]]:
+    """
+    Build the message history sent to the LLM, including summary, context, and new input.
+    """
 
-    # Window messages (history)
-    history_texts = []
+    # Initialize the message list
+    content: List[Union[SystemMessage, HumanMessage, AIMessage]] = []
+
+    # Add the system message containing the summarized conversation history
+    content.append(SystemMessage(
+        content=f"Summary of previous conversation:\n{chat_session.summary or '[empty]'}"
+    ))
+
+    # Add recent chat messages (context window)
     for row in window_rows:
         msg = preprocess_text(row.message or "")
         if not msg:
             continue
-        sender = (row.sender or "").lower()
-        history_texts.append(f"{sender}: {msg}")
-        if sender == "user":
+        if row.sender == "user":
             content.append(HumanMessage(content=msg))
-        elif sender in ("ai", "assistant", "bot"):
-            content.append(AIMessage(content=msg))
         else:
-            content.append(HumanMessage(content=msg))
+            content.append(AIMessage(content=msg))
 
-    # Current user message
+    # Add the current user message, enforcing a token limit
     if user_msg:
         msg = preprocess_text(user_msg)
-        if msg:
-            tokens = encoding_chat.encode(msg)
-            if len(tokens) > USER_MAX_TOKENS:
-                msg = encoding_chat.decode(tokens[:USER_MAX_TOKENS]) + "..."
-            content.append(HumanMessage(content=msg))
+        tokens = encoding_chat.encode(msg)
+        if len(tokens) > USER_MAX_TOKENS:
+            msg = encoding_chat.decode(tokens[:USER_MAX_TOKENS]) + "..."
+        content.append(HumanMessage(content=msg))
 
-    # Optional: file
+    # If a file is provided, encode it as a base64 image input
     if file:
         image_bytes = await file.read()
         await file.seek(0)
         b64 = base64.b64encode(image_bytes).decode()
         mime = file.content_type or "image/png"
-        image_dict = {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
-        content.append(HumanMessage(content=[image_dict]))
-
-    # ------------------ Log everything for debugging ------------------
-    log_parts = [
-        f"System Prompt:\n{system_prompt_text}",
-        f"Summary:\n{summary_text}",
-    ]
-    if history_texts:
-        log_parts.append("History:\n" + "\n".join(history_texts))
-    if user_msg:
-        log_parts.append(f"User Input:\n{user_msg}")
-    logging.info("\n--- LLM Full Input ---\n" + "\n\n".join(log_parts) + "\n---------------------")
+        content.append(HumanMessage(content=[{
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime};base64,{b64}"}
+        }]))
 
     return content
 
 # ------------------------------------------------ Chat Session Endpoints ------------------------------------------------ #
-@router.post("/sessions", response_model=ChatSessionOut)
-async def create_chat_session(
-    session: ChatSessionCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Create a new chat session for the current user."""
-    new_session = ChatSession(
-        user_id=current_user.id, title=session.title or "New Chat"
-    )
-    db.add(new_session)
-    await db.commit()
-    await db.refresh(new_session)
-    return new_session
-
-@router.patch("/sessions/{session_id}", response_model=ChatSessionOut)
-async def rename_chat_session(
-    session_id: int = Path(...),
-    title: str = Body(..., embed=True),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Rename an existing chat session for the current user."""
-    # Fetch session and check ownership
-    chat_session = await get_user_chat_session(session_id, current_user, db)
-    chat_session.title = title
-    await db.commit()
-    await db.refresh(chat_session)
-    return chat_session
-
-@router.delete("/sessions/{session_id}")
-async def delete_chat_session(
-    session_id: int = Path(...),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Delete a chat session and all its messages for the current user."""
-    # Fetch session and check ownership
-    chat_session = await get_user_chat_session(session_id, current_user, db)
-    # Delete all chat history for this session
-    await db.execute(
-        delete(ChatHistory).where(ChatHistory.chat_session_id == session_id)
-    )
-    await db.delete(chat_session)
-    await db.commit()
-    return {"success": True}
-
-@router.get("/sessions", response_model=List[ChatSessionOut])
+@router.get("/sessions")
 async def list_chat_sessions(
-    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    """List all chat sessions for the current user, ordered by creation date descending."""
+    """
+    Return all chat sessions for the current user, newest first.
+    """
     result = await db.execute(
         select(ChatSession)
         .where(ChatSession.user_id == current_user.id)
@@ -259,24 +196,77 @@ async def list_chat_sessions(
     sessions = result.scalars().all()
     return sessions
 
+@router.post("/sessions")
+async def create_chat_session(
+    title: str = Body(..., embed=True),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Create a new chat session for the current user.
+    """
+    new_session = ChatSession(
+        user_id=current_user.id, title=title or "New Chat"
+    )
+    db.add(new_session)
+    await db.commit()
+    await db.refresh(new_session)
+    return new_session
+
+@router.patch("/sessions/{session_id}")
+async def rename_chat_session(
+    session_id: int = Path(...),
+    title: str = Body(..., embed=True),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Rename an existing chat session for the current user.
+    """
+    session = await get_user_chat_session(session_id, current_user, db)
+    session.title = title
+    await db.commit()
+    await db.refresh(session)
+    return session
+
+@router.delete("/sessions/{session_id}")
+async def delete_chat_session(
+    session_id: int = Path(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Delete a chat session owned by the current user.
+    """
+    session = await get_user_chat_session(session_id, current_user, db)
+    await db.delete(session)
+    await db.commit()
+    return {"success": True}
+
+# ------------------------------------------------ Chat History Endpoint ------------------------------------------------ #
 @router.get("/history")
 async def get_chat_history(
-    session_id: Optional[int] = Query(None),
-    current_user: User = Depends(get_current_user),
+    session_id: int = Query(...),
     db: AsyncSession = Depends(get_db),
-) -> List[Dict[str, str]]:
-    """Retrieve chat history for the current user. Can filter by session ID."""
-    query = select(ChatHistory).where(ChatHistory.user_id == current_user.id)
-    if session_id is not None:
-        query = query.where(ChatHistory.chat_session_id == session_id)
-    query = query.order_by(ChatHistory.timestamp.asc())
-    result = await db.execute(query)
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    """
+    Retrieve the full chat history for a given session for the current user.
+    """
+    result = await db.execute(
+        select(ChatHistory)
+        .where(
+            ChatHistory.user_id == current_user.id,
+            ChatHistory.chat_session_id == session_id
+        )
+        .order_by(ChatHistory.timestamp.asc())
+    )
     history = result.scalars().all()
     return [
         {
             "sender": row.sender,
             "text": row.message,
-            "timestamp": row.timestamp.isoformat(),
+            "timestamp": row.timestamp.isoformat() if row.timestamp else None,
         }
         for row in history
     ]
@@ -286,28 +276,19 @@ async def get_chat_history(
 async def ask(
     message: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
-    session_id: Optional[int] = Form(None),
+    session_id: int = Form(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> Dict[str, str]:
-    """Send a message (and optional file) to the AI for a specific chat session."""
+):
+    """
+    Handle a user query (text or file) and return the AI response.
+    Stores both the user input and AI reply in chat history.
+    """
+    if not message and not file:
+        raise HTTPException(status_code=400, detail="No input provided.")
 
-    # Check for missing session ID
-    if session_id is None:
-        raise HTTPException(status_code=400, detail="Session ID required.")
-
-    # Check for overly long message
-    if message and len(message) > 20_000:
-        raise HTTPException(status_code=400, detail="Message too long")
-
-    # Update last active timestamp
-    current_user.last_active = datetime.now(timezone.utc)
-    await db.commit()
-
-    # Fetch chat session and verify ownership
     chat_session = await get_user_chat_session(session_id, current_user, db)
 
-    # Fetch full chat history for the session
     result = await db.execute(
         select(ChatHistory)
         .where(ChatHistory.chat_session_id == session_id)
@@ -315,48 +296,16 @@ async def ask(
     )
     history_rows = result.scalars().all()
 
-    # Token-aware history window
-    max_window_tokens = TOTAL_MODEL_TOKENS - SYSTEM_PROMPT_TOKENS - SUMMARY_MAX_TOKENS - USER_MAX_TOKENS - RESPONSE_RESERVE_TOKENS
-    window_rows = deque()
-    window_tokens = 0
-    for row in reversed(history_rows):
-        msg = preprocess_text(row.message or "")
-        tokens = encoding_chat.encode(msg)
-        if window_tokens + len(tokens) > max_window_tokens:
-            break
-        window_rows.appendleft(row)
-        window_tokens += len(tokens)
-    window_rows = list(window_rows)
+    content = [build_system_prompt()]
+    content.extend(await build_history_content(chat_session, history_rows, message, file))
 
-    # Determine messages for the summary (all messages before the window)
-    summary_rows = [r for r in history_rows if r.id < window_rows[0].id] if window_rows else history_rows
-
-    # Track the last summarized message ID and filter new messages for summarization
-    last_summarized_id = chat_session.summary_up_to_message_id or 0
-    new_messages = [r for r in summary_rows if r.id > last_summarized_id]
-
-    # Call the incremental summarization function if there are new messages
-    if new_messages:
-        try:
-            summary_text, new_last_id = await summarize_incremental(
-                session_id, chat_session.summary, last_summarized_id, new_messages, db
-            )
-            chat_session.summary = summary_text
-            chat_session.summary_up_to_message_id = new_last_id
-            await db.commit()
-        except Exception as e:
-            logger.warning(f"Summarization failed: {e}")
-
-    # Build LLM content
-    content = await build_llm_content(chat_session, window_rows, message, file)
-    if len(content) == 1:  # Only system prompt
-        raise HTTPException(status_code=400, detail="No input provided.")
-
-    # -------------------- LLM call & save messages --------------------
     try:
         response = await llm.ainvoke(content)
+
+        # Prepare new ChatHistory entries to store in DB
         rows_to_add = []
 
+        # Store user text input if provided
         if message:
             rows_to_add.append(ChatHistory(
                 user_id=current_user.id,
@@ -365,6 +314,7 @@ async def ask(
                 sender="user"
             ))
 
+        # Store a note for uploaded file if provided
         if file and file.filename:
             rows_to_add.append(ChatHistory(
                 user_id=current_user.id,
@@ -373,6 +323,7 @@ async def ask(
                 sender="user"
             ))
 
+        # Store AI response
         rows_to_add.append(ChatHistory(
             user_id=current_user.id,
             chat_session_id=session_id,
@@ -380,19 +331,11 @@ async def ask(
             sender="ai"
         ))
 
+        # Add all new history entries to the database and commit
         db.add_all(rows_to_add)
-        await db.flush()  # Assign IDs
-
-        # Learning analytics only for user message
-        if message:
-            await process_learning_message(db, current_user.id, message)
-
         await db.commit()
         return {"response": response.content}
 
     except Exception as e:
-        logger.error(f"LLM call failed: {e}", exc_info=True)
-        return JSONResponse(
-            {"error": "AI service is currently unavailable. Please try again later."},
-            status_code=500,
-        )
+        logger.error(f"LLM call failed: {e}")
+        raise HTTPException(status_code=500, detail="AI response failed.")
