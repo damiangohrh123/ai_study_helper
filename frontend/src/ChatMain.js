@@ -1,5 +1,6 @@
 // ChatMain.js
 // Main chat area. Displays chat history, welcome text, input box, and handles sending messages.
+import React, { useLayoutEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -48,6 +49,13 @@ function ChatMain({
   handleSend,
   onQuizClick
 }) {
+  const chatHistoryRef = useRef(null);
+
+  // Auto-scroll to bottom when messages change
+  useLayoutEffect(() => {
+    chatHistoryRef.current && (chatHistoryRef.current.scrollTop = chatHistoryRef.current.scrollHeight);
+  }, [messages]);
+
   return (
     <div className="chat-main">
 
@@ -60,7 +68,7 @@ function ChatMain({
         </div>
       )}
 
-      <div className="chat-history">
+      <div className="chat-history" ref={chatHistoryRef}>
         {messages.length === 0 ? (
           <div className="chat-welcome-text">
             Hello! How can I help you study today?
