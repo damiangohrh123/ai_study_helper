@@ -50,6 +50,7 @@ class ChatHistory(Base):
     chat_session_id = Column(Integer, ForeignKey("chat_sessions.id"), nullable=True)         # ID of the chat session
     message = Column(Text)                                                                   # content of the message
     sender = Column(String)                                                                  # 'user' or 'ai'
+    message_type = Column(String, default="text")                                           # 'text', 'quiz_question', 'quiz_answer', 'quiz_feedback', etc.
     timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))  # message timestamp
 
     user = relationship("User", back_populates="chats")                                      # reference to the User
