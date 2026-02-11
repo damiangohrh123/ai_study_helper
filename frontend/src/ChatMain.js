@@ -45,10 +45,20 @@ function ChatMain({
   handleKeyDown,
   handleImageChange,
   image,
-  handleSend
+  handleSend,
+  onQuizClick
 }) {
   return (
     <div className="chat-main">
+
+      {/* Quiz button, only show if there are messages */}
+      {messages.length > 0 && (
+        <div className="chat-global-tools">
+          <button className="chat-quiz-btn" onClick={onQuizClick} disabled={loading}>
+            Quiz Me
+          </button>
+        </div>
+      )}
 
       <div className="chat-history">
         {messages.length === 0 ? (

@@ -296,8 +296,28 @@ async def ask(
     )
     history_rows = result.scalars().all()
 
-    content = [build_system_prompt()]
-    content.extend(await build_history_content(chat_session, history_rows, message, file))
+    # Determine if user is requesting a quiz question
+    quiz_mode = message and message.strip().lower() in ['generate_quiz', 'next_question']
+
+    if quiz_mode:
+        # Check if last message is an unanswered quiz question
+        last_msg = history_rows[-1] if history_rows else None
+        if last_msg and last_msg.sender == 'ai' and getattr(last_msg, 'message_type', 'text') == 'quiz_question':
+            return {"response": "Please answer the previous quiz question before requesting a new one.", "message_type": "quiz_lock"}
+        # Build prompt for **single-question quiz**
+        system_prompt = SystemMessage(content=textwrap.dedent("""
+            You are a friendly tutor generating **one quiz question** based on the conversation so far.
+            - Keep the question clear and concise.
+            - Include conceptual or calculation questions.
+            - Wait for the user's answer before giving feedback.
+            - Feedback should be encouraging and educational.
+        """))
+        # Combine with chat history for context
+        content = [system_prompt]
+        content.extend(await build_history_content(chat_session, history_rows, None, file))
+    else:
+        content = [build_system_prompt()]
+        content.extend(await build_history_content(chat_session, history_rows, message, file))
 
     try:
         response = await llm.ainvoke(content)
@@ -307,11 +327,15 @@ async def ask(
 
         # Store user text input if provided
         if message:
+            # If the previous message was a quiz question, tag this as a quiz answer
+            last_msg = history_rows[-1] if history_rows else None
+            msg_type = 'quiz_answer' if last_msg and last_msg.sender == 'ai' and getattr(last_msg, 'message_type', 'text') == 'quiz_question' else 'text'
             rows_to_add.append(ChatHistory(
                 user_id=current_user.id,
                 chat_session_id=session_id,
                 message=message,
-                sender="user"
+                sender="user",
+                message_type=msg_type
             ))
 
         # Store a note for uploaded file if provided
@@ -320,21 +344,24 @@ async def ask(
                 user_id=current_user.id,
                 chat_session_id=session_id,
                 message=f"[Image uploaded: {file.filename}]",
-                sender="user"
+                sender="user",
+                message_type="text"
             ))
 
         # Store AI response
+        ai_msg_type = 'quiz_question' if quiz_mode else 'text'
         rows_to_add.append(ChatHistory(
             user_id=current_user.id,
             chat_session_id=session_id,
             message=response.content,
-            sender="ai"
+            sender="ai",
+            message_type=ai_msg_type
         ))
 
         # Add all new history entries to the database and commit
         db.add_all(rows_to_add)
         await db.commit()
-        return {"response": response.content}
+        return {"response": response.content, "message_type": ai_msg_type}
 
     except Exception as e:
         logger.error(f"LLM call failed: {e}")

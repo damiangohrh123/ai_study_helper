@@ -63,19 +63,16 @@ function Sidebar({
   const handleDelete = async (sessionId) => {
     if (!window.confirm('Delete this chat? This cannot be undone.')) return setMenuOpenId(null);
     try {
-      const res = await deleteChatSession(sessionId, setJwt);
-      if (res.ok) {
-        setSessions(sessions.filter(s => s.id !== sessionId));
-        if (selectedSession === sessionId) {
-          // Select another session if possible
-          const remaining = sessions.filter(s => s.id !== sessionId);
-          setSelectedSession(remaining.length ? remaining[0].id : null);
-        }
-      } else {
-        alert('Failed to delete chat.');
+      await deleteChatSession(sessionId, setJwt);
+      setSessions(sessions.filter(s => s.id !== sessionId));
+      if (selectedSession === sessionId) {
+        // Select another session if possible
+        const remaining = sessions.filter(s => s.id !== sessionId);
+        setSelectedSession(remaining.length ? remaining[0].id : null);
       }
-    } catch {
-      alert('Error deleting chat.');
+    } catch (err) {
+      // Only show error if truly thrown (network or backend error)
+      alert(err?.message || 'Error deleting chat.');
     }
     setMenuOpenId(null);
   };
