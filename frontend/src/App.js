@@ -175,16 +175,13 @@ function ThemeToggle({ theme, setTheme }) {
           selectedSession={selectedSession}
           setSelectedSession={setSelectedSession}
           handleNewChat={handleNewChat}
-          ThemeToggle={ThemeToggle}
-          theme={theme}
-          setTheme={setTheme}
           handleLogout={handleLogout}
           setJwt={setJwt}
           activeView={activeView}
           setActiveView={setActiveView}
         />
         {activeView === 'profile' ? (
-          <ProfilePage setJwt={setJwt} />
+          <ProfilePage theme={theme} setTheme={setTheme} />
         ) : (
           <ChatMain
             messages={messages}

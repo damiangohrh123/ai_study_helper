@@ -1,5 +1,5 @@
 // Sidebar.js
-// Renders the sidebar with chat sessions, new chat button, theme toggle, and logout.
+// Renders the sidebar with chat sessions, new chat button, and logout.
 import React, { useState, useEffect, useRef } from 'react';
 import { renameChatSession, deleteChatSession } from './api';
 
@@ -9,9 +9,6 @@ function Sidebar({
   selectedSession,
   setSelectedSession,
   handleNewChat,
-  ThemeToggle,
-  theme,
-  setTheme,
   handleLogout,
   setJwt,
   activeView,
@@ -135,7 +132,6 @@ function Sidebar({
         Profile
       </button>
       <div className="sidebar-bottom">
-        <ThemeToggle theme={theme} setTheme={setTheme} />
         <button onClick={handleLogout} className="logout-btn" style={{ width: '100%' }}>
           Logout
         </button>
