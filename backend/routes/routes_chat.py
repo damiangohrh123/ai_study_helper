@@ -352,7 +352,7 @@ async def ask(
 
     chat_session = await get_user_chat_session(session_id, current_user, db)
 
-    # Load full chat history
+    # Load full chat history (only used for normal chat, not quiz)
     result = await db.execute(
         select(ChatHistory)
         .where(ChatHistory.chat_session_id == session_id)
@@ -362,7 +362,7 @@ async def ask(
 
     quiz_mode = action == "quiz"
 
-    
+    # Check for existing unanswered quiz
     if quiz_mode and await has_unanswered_quiz(session_id, db):
         return {
             "response": "Please answer the current quiz question first.",
@@ -370,30 +370,67 @@ async def ask(
         }
 
     try:
-        # Build the message content for the LLM
-        content = [
-            build_system_prompt(quiz_mode),
-            *await build_history_content(chat_session, history_rows, message if not quiz_mode else None, file)
-        ]
+        # Build messages for the LLM
+        if quiz_mode:
+
+            # Filter out quiz-related messages from history
+            non_quiz_history = [
+                row for row in history_rows
+                if row.message_type not in ("quiz_question", "quiz_answer")
+            ]
+
+            # Pick last 10 messages for context
+            recent_msgs = non_quiz_history[-10:]
+
+            # Build system prompt
+            content = [
+                SystemMessage(content="""
+                    You are a friendly tutor generating ONE quiz question on the CURRENT TOPIC.
+                    Do NOT elaborate on previous questions.
+                    Do NOT explain answers.
+                    Use the context of recent messages only to stay on-topic.
+                    Ask ONE clear question and stop.
+                    """.strip())
+            ]
+
+            # Add recent messages for context
+            for row in recent_msgs:
+                msg_text = preprocess_text(row.message or "")
+                if not msg_text:
+                    continue
+                if row.sender == "user":
+                    content.append(HumanMessage(content=msg_text))
+                else:
+                    content.append(AIMessage(content=msg_text))
+
+        else:
+            # Normal chat: include summary + all messages
+            content = [
+                build_system_prompt(quiz_mode),
+                *await build_history_content(chat_session, history_rows, message, file)
+            ]
+
+        # Generate LLM response
         response = await llm.ainvoke(content)
 
-        # Save the messages (user + AI)
+        # Save user and AI messages
         rows_to_add, ai_msg_type = await save_user_and_ai_messages(
             db, current_user, session_id, message, file, response.content, quiz_mode
         )
 
-        # Update chat summary incrementally
-        last_summary = chat_session.summary
-        last_summary_id = chat_session.summary_up_to_message_id or 0
-        new_messages = [row for row in rows_to_add if row.sender in ("user", "ai")]
-        summary, new_id = await summarize_incremental(
-            last_summary=last_summary,
-            last_summary_id=last_summary_id,
-            new_messages=new_messages
-        )
+        # Update chat summary incrementally (skip if quiz mode)
+        if not quiz_mode:
+            last_summary = chat_session.summary
+            last_summary_id = chat_session.summary_up_to_message_id or 0
+            new_messages = [row for row in rows_to_add if row.sender in ("user", "ai")]
+            summary, new_id = await summarize_incremental(
+                last_summary=last_summary,
+                last_summary_id=last_summary_id,
+                new_messages=new_messages
+            )
+            chat_session.summary = summary
+            chat_session.summary_up_to_message_id = new_id
 
-        chat_session.summary = summary
-        chat_session.summary_up_to_message_id = new_id
         await db.commit()
 
         return {"response": response.content, "message_type": ai_msg_type}
