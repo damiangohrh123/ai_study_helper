@@ -92,8 +92,12 @@ async def summarize_incremental(
 
     system_prompt = SystemMessage(content=textwrap.dedent(f"""
         You are a chat memory assistant.
+        IMPORTANT RULES:
+        - Ignore quiz questions, quiz answers, and quiz feedback.
+        - Ignore assessment, testing, or grading interactions.
+        - Only retain stable knowledge, explanations, definitions, and conclusions.
+        Messages are formatted as "user:" or "ai:".
         Keep summaries under {SUMMARY_MAX_TOKENS} tokens.
-        Only retain key facts and conclusions.
     """))
 
     prompt = (
@@ -150,6 +154,8 @@ async def build_history_content(
 
     # Add recent chat messages (context window)
     for row in window_rows:
+        if getattr(row, "message_type", "text") == "quiz_request":
+            continue
         msg = preprocess_text(row.message or "")
         if not msg:
             continue
@@ -178,6 +184,68 @@ async def build_history_content(
         }]))
 
     return content
+
+def filter_history_for_quiz(history_rows):
+    """Filter out quiz requests and answers from history for quiz mode."""
+    return [
+        row for row in history_rows
+        if getattr(row, "message_type", "text") not in ("quiz_request", "quiz_answer")
+    ]
+
+async def build_llm_content(chat_session, history_rows, message, file, quiz_mode):
+    if quiz_mode:
+        system_prompt = SystemMessage(content=textwrap.dedent("""
+            You are a friendly tutor generating ONE new quiz question from the conversation.
+            Include conceptual or calculation questions.
+            Wait for the user's answer before giving encouraging feedback.
+            Ignore previous quiz answers.
+        """).strip().replace("\n", " "))
+        filtered_history = filter_history_for_quiz(history_rows)
+        content = [system_prompt]
+        content.extend(await build_history_content(chat_session, filtered_history, None, file))
+    else:
+        content = [build_system_prompt()]
+        content.extend(await build_history_content(chat_session, history_rows, message, file))
+    return content
+
+def build_user_history_rows(
+    user_id: int,
+    session_id: int,
+    message: Optional[str],
+    file: Optional[UploadFile],
+    last_ai_msg_type: Optional[str] = None
+) -> list:
+    rows = []
+    if message:
+        msg_type = "quiz_answer" if last_ai_msg_type == "quiz_question" else "text"
+        rows.append(ChatHistory(
+            user_id=user_id,
+            chat_session_id=session_id,
+            message=message,
+            sender="user",
+            message_type=msg_type
+        ))
+    if file and file.filename:
+        rows.append(ChatHistory(
+            user_id=user_id,
+            chat_session_id=session_id,
+            message=f"[Image uploaded: {file.filename}]",
+            sender="user",
+            message_type="text"
+        ))
+    return rows
+
+def save_ai_message(db, user_id, session_id, response_content, quiz_mode):
+    ai_msg_type = "quiz_question" if quiz_mode else "text"
+    ai_row = ChatHistory(
+        user_id=user_id,
+        chat_session_id=session_id,
+        message=response_content,
+        sender="ai",
+        message_type=ai_msg_type
+    )
+    db.add(ai_row)
+    return ai_row, ai_msg_type
 
 # ------------------------------------------------ Chat Session Endpoints ------------------------------------------------ #
 @router.get("/sessions")
@@ -275,20 +343,18 @@ async def get_chat_history(
 @router.post("/ask")
 async def ask(
     message: Optional[str] = Form(None),
+    action: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     session_id: int = Form(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Handle a user query (text or file) and return the AI response.
-    Stores both the user input and AI reply in chat history.
-    """
-    if not message and not file:
+    if not message and not file and not action:
         raise HTTPException(status_code=400, detail="No input provided.")
 
     chat_session = await get_user_chat_session(session_id, current_user, db)
 
+    # Load full chat history
     result = await db.execute(
         select(ChatHistory)
         .where(ChatHistory.chat_session_id == session_id)
@@ -296,71 +362,56 @@ async def ask(
     )
     history_rows = result.scalars().all()
 
-    # Determine if user is requesting a quiz question
-    quiz_mode = message and message.strip().lower() in ['generate_quiz', 'next_question']
-
+    quiz_mode = action == "quiz"
     if quiz_mode:
-        # Check if last message is an unanswered quiz question
-        last_msg = history_rows[-1] if history_rows else None
-        if last_msg and last_msg.sender == 'ai' and getattr(last_msg, 'message_type', 'text') == 'quiz_question':
-            return {"response": "Please answer the previous quiz question before requesting a new one.", "message_type": "quiz_lock"}
-        # Build prompt for **single-question quiz**
-        system_prompt = SystemMessage(content=textwrap.dedent("""
-            You are a friendly tutor generating **one quiz question** based on the conversation so far.
-            - Keep the question clear and concise.
-            - Include conceptual or calculation questions.
-            - Wait for the user's answer before giving feedback.
-            - Feedback should be encouraging and educational.
-        """))
-        # Combine with chat history for context
-        content = [system_prompt]
-        content.extend(await build_history_content(chat_session, history_rows, None, file))
-    else:
-        content = [build_system_prompt()]
-        content.extend(await build_history_content(chat_session, history_rows, message, file))
-
-    try:
-        response = await llm.ainvoke(content)
-
-        # Prepare new ChatHistory entries to store in DB
-        rows_to_add = []
-
-        # Store user text input if provided
-        if message:
-            # If the previous message was a quiz question, tag this as a quiz answer
-            last_msg = history_rows[-1] if history_rows else None
-            msg_type = 'quiz_answer' if last_msg and last_msg.sender == 'ai' and getattr(last_msg, 'message_type', 'text') == 'quiz_question' else 'text'
-            rows_to_add.append(ChatHistory(
-                user_id=current_user.id,
-                chat_session_id=session_id,
-                message=message,
-                sender="user",
-                message_type=msg_type
-            ))
-
-        # Store a note for uploaded file if provided
-        if file and file.filename:
-            rows_to_add.append(ChatHistory(
-                user_id=current_user.id,
-                chat_session_id=session_id,
-                message=f"[Image uploaded: {file.filename}]",
-                sender="user",
-                message_type="text"
-            ))
-
-        # Store AI response
-        ai_msg_type = 'quiz_question' if quiz_mode else 'text'
-        rows_to_add.append(ChatHistory(
+        # Save the 'Quiz Me!' message
+        quiz_user_msg = ChatHistory(
             user_id=current_user.id,
             chat_session_id=session_id,
-            message=response.content,
-            sender="ai",
-            message_type=ai_msg_type
-        ))
-
-        # Add all new history entries to the database and commit
-        db.add_all(rows_to_add)
+            message="Quiz Me!",
+            sender="user",
+            message_type="quiz_request"
+        )
+        db.add(quiz_user_msg)
         await db.commit()
+        await db.refresh(quiz_user_msg)
+        history_rows.append(quiz_user_msg)  # ensures it appears in UI
+
+    try:
+        content = await build_llm_content(chat_session, history_rows, message, file, quiz_mode)
+        response = await llm.ainvoke(content)
+
+        # Find last AI message type for user message typing
+        last_ai_msg_type = None
+        for row in reversed(history_rows):
+            if row.sender == "ai":
+                last_ai_msg_type = getattr(row, "message_type", "text")
+                break
+
+        user_rows = build_user_history_rows(
+            current_user.id, session_id, message, file, last_ai_msg_type
+        )
+
+        ai_row, ai_msg_type = save_ai_message(
+            db, current_user.id, session_id, response.content, quiz_mode
+        )
+
+        db.add_all(user_rows + [ai_row])
+
+        # Update summary incrementally
+        last_summary = chat_session.summary
+        last_summary_id = chat_session.summary_up_to_message_id or 0
+        new_messages = [row for row in user_rows + [ai_row] if row.sender in ("user", "ai")]
+        summary, new_id = await summarize_incremental(
+            last_summary=last_summary,
+            last_summary_id=last_summary_id,
+            new_messages=new_messages
+        )
+
+        chat_session.summary = summary
+        chat_session.summary_up_to_message_id = new_id
+        await db.commit()
+
         return {"response": response.content, "message_type": ai_msg_type}
 
     except Exception as e:

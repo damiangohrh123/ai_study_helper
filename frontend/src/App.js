@@ -103,11 +103,12 @@ function AppInner() {
       alert('Please answer the current quiz question first.');
       return;
     }
+    setMessages(msgs => [...msgs, { sender: 'user', text: 'Quiz Me!' }]);
     const formData = new FormData();
-    formData.append('message', 'generate_quiz');
+    formData.append('message', '');
     formData.append('session_id', selectedSession);
-    formData.append('question_count', '1');
-    await sendMessage(formData, true, 'Quiz Me!');
+    formData.append('action', 'quiz');
+    await sendMessage(formData, false); // Don't add user message again in sendMessage
   };
 
   const handleNewChat = async () => {
