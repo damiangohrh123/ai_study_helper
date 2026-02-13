@@ -20,6 +20,7 @@ function AppInner() {
   const [image, setImage] = useState(null);
   const [loading, setLoading] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'light');
+  const [awaitingQuizAnswer, setAwaitingQuizAnswer] = useState(false);
 
   useEffect(() => {
     document.body.classList.toggle('dark-theme', theme === 'dark');
@@ -48,17 +49,17 @@ function AppInner() {
       .catch(() => setMessages([]));
   }, [jwt, selectedSession, activeView, setJwt, logout]);
 
-  // Unified message sending logic
-  const sendMessage = async (formData) => {
+  // Unified send logic
+  const sendMessage = async (formData, isQuizAnswer = false) => {
     setLoading(true);
     try {
+      const endpoint = isQuizAnswer ? '/chat/quiz/answer' : '/chat/ask';
       const res = await fetchWithAuth(
-        `${BASE_URL}/chat/ask`,
+        `${BASE_URL}${endpoint}`,
         { method: 'POST', body: formData },
         setJwt,
         logout
       );
-
       const data = await res.json();
 
       if (data.message_type === 'quiz_lock') {
@@ -70,6 +71,9 @@ function AppInner() {
         ...msgs,
         { sender: 'ai', text: data.response, type: data.message_type }
       ]);
+
+      if (isQuizAnswer) setAwaitingQuizAnswer(false); // finished quiz
+      if (data.message_type === 'quiz_question') setAwaitingQuizAnswer(true); // new quiz
 
       return true;
     } finally {
@@ -84,26 +88,54 @@ function AppInner() {
 
     const formData = new FormData();
     formData.append('session_id', selectedSession);
-    if (input.trim()) formData.append('message', input);
+    if (input.trim()) formData.append(awaitingQuizAnswer ? 'answer' : 'message', input);
     if (image) formData.append('file', image);
 
-    await sendMessage(formData);
+    await sendMessage(formData, awaitingQuizAnswer);
+
+    setInput('');
+    setImage(null);
   };
 
   const handleQuizClick = async () => {
     if (loading) return;
 
-    // Optimistically add "Quiz Me!" first
-    setMessages(msgs => [...msgs, { sender: 'user', text: 'Quiz Me!' }]);
+    setLoading(true);
 
-    const formData = new FormData();
-    formData.append('session_id', selectedSession);
-    formData.append('action', 'quiz');
+    try {
+      // Optimistically show the user clicked
+      setMessages(msgs => [...msgs, { sender: 'user', text: 'Quiz Me!' }]);
 
-    const ok = await sendMessage(formData);
+      const formData = new FormData();
+      formData.append('session_id', selectedSession);
 
-    if (!ok) {
-      setMessages(msgs => msgs.slice(0, -1));
+      const res = await fetchWithAuth(
+        `${BASE_URL}/chat/quiz`,
+        { method: 'POST', body: formData },
+        setJwt,
+        logout
+      );
+
+      const data = await res.json();
+
+      if (data.message_type === 'quiz_lock') {
+        alert(data.response);
+        // Remove the optimistic "Quiz Me!" message
+        setMessages(msgs => msgs.slice(0, -1));
+        return;
+      }
+
+      // Add quiz question from AI
+      setMessages(msgs => [
+        ...msgs,
+        { sender: 'ai', text: data.response, type: data.message_type }
+      ]);
+
+      // Set flag to indicate we are awaiting an answer
+      setAwaitingQuizAnswer(true);
+
+    } finally {
+      setLoading(false);
     }
   };
 

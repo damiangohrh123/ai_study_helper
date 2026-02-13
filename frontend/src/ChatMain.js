@@ -47,20 +47,22 @@ function ChatMain({
   handleImageChange,
   image,
   handleSend,
-  onQuizClick
+  onQuizClick,
+  awaitingQuizAnswer
 }) {
   const chatHistoryRef = useRef(null);
 
-  // Auto-scroll to bottom when messages change
   useLayoutEffect(() => {
-    chatHistoryRef.current && (chatHistoryRef.current.scrollTop = chatHistoryRef.current.scrollHeight);
+    if (chatHistoryRef.current) {
+      chatHistoryRef.current.scrollTop = chatHistoryRef.current.scrollHeight;
+    }
   }, [messages]);
 
   return (
     <div className="chat-main">
 
-      {/* Quiz button, only show if there are messages */}
-      {messages.length > 0 && (
+      {/* Quiz button, only show if there are messages and not awaiting quiz answer */}
+      {messages.length > 0 && !awaitingQuizAnswer && (
         <div className="chat-global-tools">
           <button className="chat-quiz-btn" onClick={onQuizClick} disabled={loading}>
             Quiz Me
@@ -76,7 +78,7 @@ function ChatMain({
         ) : (
           messages.map((msg, idx) => {
             const isUser = msg.sender === 'user';
-            const content = isUser ? msg.text : normalizeLatex(msg.text);
+            const content = isUser ? msg.text : msg.text ? normalizeLatex(msg.text) : "";
 
             return (
               <div key={idx} className={`chat-message ${isUser ? 'user' : 'ai'}`}>
@@ -99,12 +101,19 @@ function ChatMain({
       </div>
 
       <div className="chat-input-row">
+        {/* Quiz banner */}
+        {awaitingQuizAnswer && (
+          <div className="chat-quiz-banner">
+            You're answering a quiz question. Please type your answer below.
+          </div>
+        )}
+
         <input
           type="text"
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Type your question..."
+          placeholder={awaitingQuizAnswer ? "Answer the quiz question..." : "Type your question..."}
           className="chat-input"
           disabled={loading}
         />

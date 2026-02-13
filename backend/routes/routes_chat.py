@@ -191,11 +191,11 @@ async def build_history_content(
 
     return content
 
-async def save_user_and_ai_messages(db, current_user, session_id, message, file, response_content, quiz_mode):
+async def save_user_and_ai_messages(db, current_user, session_id, message, file, response_content, quiz_mode=False):
     rows = []
 
     if message:
-        msg_type = "quiz_answer" if await has_unanswered_quiz(session_id, db) else "text"
+        msg_type = "quiz_answer" if quiz_mode else "text"
         rows.append(ChatHistory(
             user_id=current_user.id,
             chat_session_id=session_id,
@@ -205,7 +205,13 @@ async def save_user_and_ai_messages(db, current_user, session_id, message, file,
         ))
 
     if file:
-        rows.append(ChatHistory(...))
+        rows.append(ChatHistory(
+            user_id=current_user.id,
+            chat_session_id=session_id,
+            message="[file]",
+            sender="user",
+            message_type="file"
+        ))
 
     ai_type = "quiz_question" if quiz_mode else "text"
     rows.append(ChatHistory(
@@ -218,7 +224,6 @@ async def save_user_and_ai_messages(db, current_user, session_id, message, file,
 
     db.add_all(rows)
     return rows, ai_type
-
 async def has_unanswered_quiz(session_id: int, db: AsyncSession) -> bool:
     result = await db.execute(
         select(ChatHistory)
@@ -341,18 +346,61 @@ async def get_chat_history(
 @router.post("/ask")
 async def ask(
     message: Optional[str] = Form(None),
-    action: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     session_id: int = Form(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not message and not file and not action:
+    if not message and not file:
         raise HTTPException(status_code=400, detail="No input provided.")
 
     chat_session = await get_user_chat_session(session_id, current_user, db)
 
-    # Load full chat history (only used for normal chat, not quiz)
+    result = await db.execute(
+        select(ChatHistory).where(ChatHistory.chat_session_id == session_id).order_by(ChatHistory.timestamp.asc())
+    )
+    history_rows = result.scalars().all()
+
+    # Build messages + summary
+    content = [build_system_prompt(False), *await build_history_content(chat_session, history_rows, message, file)]
+
+    # Call LLM
+    response = await llm.ainvoke(content)
+
+    # Save messages
+    rows_to_add, ai_msg_type = await save_user_and_ai_messages(
+        db, current_user, session_id, message, file, response.content, quiz_mode=False
+    )
+
+    # Incremental summary
+    last_summary = chat_session.summary
+    last_summary_id = chat_session.summary_up_to_message_id or 0
+    new_messages = [row for row in rows_to_add if row.sender in ("user", "ai")]
+    summary, new_id = await summarize_incremental(last_summary, last_summary_id, new_messages)
+    chat_session.summary = summary
+    chat_session.summary_up_to_message_id = new_id
+
+    await db.commit()
+
+    return {"response": response.content, "message_type": ai_msg_type}
+
+# ------------------------------------------------ Quiz Endpoint ------------------------------------------------ #
+@router.post("/quiz")
+async def ask_quiz(
+    session_id: int = Form(...),
+    topic: Optional[str] = Form(None),
+    difficulty: Optional[str] = Form("medium"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # 1. Validate session. Not accessed directly, but ensures session exists and belongs to user for subsequent queries.
+    chat_session = await get_user_chat_session(session_id, current_user, db)
+
+    # 2. Check unanswered quiz
+    if await has_unanswered_quiz(session_id, db):
+        return {"response": "Please answer the current quiz question first.", "message_type": "quiz_lock"}
+
+    # 3. Load recent chat history (ignore previous quizzes)
     result = await db.execute(
         select(ChatHistory)
         .where(ChatHistory.chat_session_id == session_id)
@@ -360,81 +408,116 @@ async def ask(
     )
     history_rows = result.scalars().all()
 
-    quiz_mode = action == "quiz"
+    non_quiz_history = [row for row in history_rows if row.message_type not in ("quiz_question", "quiz_answer")]
+    recent_msgs = non_quiz_history[-10:]  # last 10 messages for context
 
-    # Check for existing unanswered quiz
-    if quiz_mode and await has_unanswered_quiz(session_id, db):
-        return {
-            "response": "Please answer the current quiz question first.",
-            "message_type": "quiz_lock"
-        }
+    # 4. Build quiz system prompt
+    system_prompt = SystemMessage(content=f"""
+        You are a friendly tutor generating ONE quiz question.
+        Topic: {topic or 'current discussion'}
+        Difficulty: {difficulty}
+        Use context of recent messages only.
+        Do NOT explain answers.
+        Ask ONE clear question and stop.
+    """.strip())
 
-    try:
-        # Build messages for the LLM
-        if quiz_mode:
+    content = [system_prompt]
+    for row in recent_msgs:
+        msg_text = preprocess_text(row.message or "")
+        if not msg_text:
+            continue
+        content.append(HumanMessage(content=msg_text) if row.sender == "user" else AIMessage(content=msg_text))
 
-            # Filter out quiz-related messages from history
-            non_quiz_history = [
-                row for row in history_rows
-                if row.message_type not in ("quiz_question", "quiz_answer")
-            ]
+    # 5. Call LLM to generate question
+    response = await llm.ainvoke(content)
+    question_text = response.content.strip()
 
-            # Pick last 10 messages for context
-            recent_msgs = non_quiz_history[-10:]
+    # 6. Save quiz question
+    await save_user_and_ai_messages(
+        db=db,
+        current_user=current_user,
+        session_id=session_id,
+        message=None,
+        file=None,
+        response_content=question_text,
+        quiz_mode=True
+    )
+    await db.commit()
 
-            # Build system prompt
-            content = [
-                SystemMessage(content="""
-                    You are a friendly tutor generating ONE quiz question on the CURRENT TOPIC.
-                    Do NOT elaborate on previous questions.
-                    Do NOT explain answers.
-                    Use the context of recent messages only to stay on-topic.
-                    Ask ONE clear question and stop.
-                    """.strip())
-            ]
+    # 7. Return question
+    return {"response": question_text, "message_type": "quiz_question"}
 
-            # Add recent messages for context
-            for row in recent_msgs:
-                msg_text = preprocess_text(row.message or "")
-                if not msg_text:
-                    continue
-                if row.sender == "user":
-                    content.append(HumanMessage(content=msg_text))
-                else:
-                    content.append(AIMessage(content=msg_text))
+@router.post("/quiz/answer")
+async def submit_quiz_answer(
+    session_id: int = Form(...),
+    answer: str = Form(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # 1. Validate session. Not accessed directly, but ensures session exists and belongs to user for subsequent queries.
+    chat_session = await get_user_chat_session(session_id, current_user, db)
 
-        else:
-            # Normal chat: include summary + all messages
-            content = [
-                build_system_prompt(quiz_mode),
-                *await build_history_content(chat_session, history_rows, message, file)
-            ]
-
-        # Generate LLM response
-        response = await llm.ainvoke(content)
-
-        # Save user and AI messages
-        rows_to_add, ai_msg_type = await save_user_and_ai_messages(
-            db, current_user, session_id, message, file, response.content, quiz_mode
+    # 2. Get the latest unanswered quiz question
+    result = await db.execute(
+        select(ChatHistory)
+        .where(
+            ChatHistory.chat_session_id == session_id,
+            ChatHistory.message_type == "quiz_question"
         )
+        .order_by(ChatHistory.id.desc())
+        .limit(1)
+    )
+    quiz_question = result.scalar_one_or_none()
+    if not quiz_question:
+        raise HTTPException(status_code=400, detail="No quiz question to answer.")
 
-        # Update chat summary incrementally (skip if quiz mode)
-        if not quiz_mode:
-            last_summary = chat_session.summary
-            last_summary_id = chat_session.summary_up_to_message_id or 0
-            new_messages = [row for row in rows_to_add if row.sender in ("user", "ai")]
-            summary, new_id = await summarize_incremental(
-                last_summary=last_summary,
-                last_summary_id=last_summary_id,
-                new_messages=new_messages
-            )
-            chat_session.summary = summary
-            chat_session.summary_up_to_message_id = new_id
+    # Check if already answered
+    result = await db.execute(
+        select(ChatHistory)
+        .where(
+            ChatHistory.chat_session_id == session_id,
+            ChatHistory.id > quiz_question.id,
+            ChatHistory.message_type == "quiz_answer"
+        )
+        .limit(1)
+    )
+    if result.scalar_one_or_none():
+        return {"response": "This quiz has already been answered.", "message_type": "quiz_lock"}
 
-        await db.commit()
+    # 3. Save user's answer
+    user_row = ChatHistory(
+        user_id=current_user.id,
+        chat_session_id=session_id,
+        message=answer,
+        sender="user",
+        message_type="quiz_answer"
+    )
+    db.add(user_row)
+    await db.commit()
+    await db.refresh(user_row)
 
-        return {"response": response.content, "message_type": ai_msg_type}
+    # 4. Optional: Call LLM to give feedback
+    feedback_prompt = SystemMessage(content="""
+        You are a helpful tutor. 
+        Provide brief feedback on whether the user's answer is correct, and explain in 1-2 sentences.
+        Do not repeat the question.
+    """)
+    response = await llm.ainvoke([
+        feedback_prompt,
+        HumanMessage(content=f"Question: {quiz_question.message}\nUser Answer: {answer}")
+    ])
+    feedback_text = response.content.strip()
 
-    except Exception as e:
-        logger.error(f"LLM call failed: {e}")
-        raise HTTPException(status_code=500, detail="AI response failed.")
+    # 5. Save AI feedback
+    ai_row = ChatHistory(
+        user_id=current_user.id,
+        chat_session_id=session_id,
+        message=feedback_text,
+        sender="ai",
+        message_type="quiz_feedback"
+    )
+    db.add(ai_row)
+    await db.commit()
+
+    # 6. Return feedback to frontend
+    return {"response": feedback_text, "message_type": "quiz_feedback"}
