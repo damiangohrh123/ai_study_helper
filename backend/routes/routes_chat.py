@@ -1,3 +1,4 @@
+from sqlalchemy import desc
 import base64
 import logging
 import os
@@ -120,8 +121,15 @@ async def summarize_incremental(
     # Return the updated summary and the ID of the last processed message
     return summary, new_messages[-1].id
 
-def build_system_prompt() -> SystemMessage:
-    return SystemMessage(content=textwrap.dedent("""
+def build_system_prompt(quiz_mode: bool) -> SystemMessage:
+    if quiz_mode:
+        return SystemMessage(content="""
+            You are a friendly tutor generating ONE new quiz question.
+            Do NOT provide answers or feedback.
+            Ask exactly one question and wait.
+        """.strip())
+
+    return SystemMessage(content="""
         You are a helpful tutor.
         Default to clear, step-by-step explanations
         unless the user explicitly asks for brevity.
@@ -132,7 +140,7 @@ def build_system_prompt() -> SystemMessage:
         - Never use \\( \\) or \\[ \\]
         - Never bold math
         - LaTeX must compile
-    """))
+    """)
 
 async def build_history_content(
     chat_session: ChatSession,
@@ -154,8 +162,6 @@ async def build_history_content(
 
     # Add recent chat messages (context window)
     for row in window_rows:
-        if getattr(row, "message_type", "text") == "quiz_request":
-            continue
         msg = preprocess_text(row.message or "")
         if not msg:
             continue
@@ -185,67 +191,58 @@ async def build_history_content(
 
     return content
 
-def filter_history_for_quiz(history_rows):
-    """Filter out quiz requests and answers from history for quiz mode."""
-    return [
-        row for row in history_rows
-        if getattr(row, "message_type", "text") not in ("quiz_request", "quiz_answer")
-    ]
-
-async def build_llm_content(chat_session, history_rows, message, file, quiz_mode):
-    if quiz_mode:
-        system_prompt = SystemMessage(content=textwrap.dedent("""
-            You are a friendly tutor generating ONE new quiz question from the conversation.
-            Include conceptual or calculation questions.
-            Wait for the user's answer before giving encouraging feedback.
-            Ignore previous quiz answers.
-        """).strip().replace("\n", " "))
-        filtered_history = filter_history_for_quiz(history_rows)
-        content = [system_prompt]
-        content.extend(await build_history_content(chat_session, filtered_history, None, file))
-    else:
-        content = [build_system_prompt()]
-        content.extend(await build_history_content(chat_session, history_rows, message, file))
-    return content
-
-def build_user_history_rows(
-    user_id: int,
-    session_id: int,
-    message: Optional[str],
-    file: Optional[UploadFile],
-    last_ai_msg_type: Optional[str] = None
-) -> list:
+async def save_user_and_ai_messages(db, current_user, session_id, message, file, response_content, quiz_mode):
     rows = []
+
     if message:
-        msg_type = "quiz_answer" if last_ai_msg_type == "quiz_question" else "text"
+        msg_type = "quiz_answer" if await has_unanswered_quiz(session_id, db) else "text"
         rows.append(ChatHistory(
-            user_id=user_id,
+            user_id=current_user.id,
             chat_session_id=session_id,
             message=message,
             sender="user",
             message_type=msg_type
         ))
-    if file and file.filename:
-        rows.append(ChatHistory(
-            user_id=user_id,
-            chat_session_id=session_id,
-            message=f"[Image uploaded: {file.filename}]",
-            sender="user",
-            message_type="text"
-        ))
-    return rows
 
-def save_ai_message(db, user_id, session_id, response_content, quiz_mode):
-    ai_msg_type = "quiz_question" if quiz_mode else "text"
-    ai_row = ChatHistory(
-        user_id=user_id,
+    if file:
+        rows.append(ChatHistory(...))
+
+    ai_type = "quiz_question" if quiz_mode else "text"
+    rows.append(ChatHistory(
+        user_id=current_user.id,
         chat_session_id=session_id,
         message=response_content,
         sender="ai",
-        message_type=ai_msg_type
+        message_type=ai_type
+    ))
+
+    db.add_all(rows)
+    return rows, ai_type
+
+async def has_unanswered_quiz(session_id: int, db: AsyncSession) -> bool:
+    result = await db.execute(
+        select(ChatHistory)
+        .where(
+            ChatHistory.chat_session_id == session_id,
+            ChatHistory.message_type == "quiz_question"
+        )
+        .order_by(ChatHistory.id.desc())
+        .limit(1)
     )
-    db.add(ai_row)
-    return ai_row, ai_msg_type
+    quiz = result.scalar_one_or_none()
+    if not quiz:
+        return False
+
+    result = await db.execute(
+        select(ChatHistory)
+        .where(
+            ChatHistory.chat_session_id == session_id,
+            ChatHistory.id > quiz.id,
+            ChatHistory.message_type == "quiz_answer"
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is None
 
 # ------------------------------------------------ Chat Session Endpoints ------------------------------------------------ #
 @router.get("/sessions")
@@ -334,6 +331,7 @@ async def get_chat_history(
         {
             "sender": row.sender,
             "text": row.message,
+            "type": row.message_type,
             "timestamp": row.timestamp.isoformat() if row.timestamp else None,
         }
         for row in history
@@ -363,45 +361,31 @@ async def ask(
     history_rows = result.scalars().all()
 
     quiz_mode = action == "quiz"
-    if quiz_mode:
-        # Save the 'Quiz Me!' message
-        quiz_user_msg = ChatHistory(
-            user_id=current_user.id,
-            chat_session_id=session_id,
-            message="Quiz Me!",
-            sender="user",
-            message_type="quiz_request"
-        )
-        db.add(quiz_user_msg)
-        await db.commit()
-        await db.refresh(quiz_user_msg)
-        history_rows.append(quiz_user_msg)  # ensures it appears in UI
+
+    
+    if quiz_mode and await has_unanswered_quiz(session_id, db):
+        return {
+            "response": "Please answer the current quiz question first.",
+            "message_type": "quiz_lock"
+        }
 
     try:
-        content = await build_llm_content(chat_session, history_rows, message, file, quiz_mode)
+        # Build the message content for the LLM
+        content = [
+            build_system_prompt(quiz_mode),
+            *await build_history_content(chat_session, history_rows, message if not quiz_mode else None, file)
+        ]
         response = await llm.ainvoke(content)
 
-        # Find last AI message type for user message typing
-        last_ai_msg_type = None
-        for row in reversed(history_rows):
-            if row.sender == "ai":
-                last_ai_msg_type = getattr(row, "message_type", "text")
-                break
-
-        user_rows = build_user_history_rows(
-            current_user.id, session_id, message, file, last_ai_msg_type
+        # Save the messages (user + AI)
+        rows_to_add, ai_msg_type = await save_user_and_ai_messages(
+            db, current_user, session_id, message, file, response.content, quiz_mode
         )
 
-        ai_row, ai_msg_type = save_ai_message(
-            db, current_user.id, session_id, response.content, quiz_mode
-        )
-
-        db.add_all(user_rows + [ai_row])
-
-        # Update summary incrementally
+        # Update chat summary incrementally
         last_summary = chat_session.summary
         last_summary_id = chat_session.summary_up_to_message_id or 0
-        new_messages = [row for row in user_rows + [ai_row] if row.sender in ("user", "ai")]
+        new_messages = [row for row in rows_to_add if row.sender in ("user", "ai")]
         summary, new_id = await summarize_incremental(
             last_summary=last_summary,
             last_summary_id=last_summary_id,

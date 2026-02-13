@@ -1,4 +1,3 @@
-// App.js
 import React, { useState, useEffect } from 'react';
 import { fetchWithAuth } from './api';
 import { AuthProvider, useAuth } from './AuthContext';
@@ -35,7 +34,7 @@ function AppInner() {
         setSessions(data);
         if (data.length) setSelectedSession(data[0].id);
       })
-      .catch(() => {});
+      .catch(() => { });
   }, [jwt, setJwt, logout]);
 
   useEffect(() => {
@@ -49,14 +48,8 @@ function AppInner() {
       .catch(() => setMessages([]));
   }, [jwt, selectedSession, activeView, setJwt, logout]);
 
-  const hasUnansweredQuiz = () => {
-    if (!messages.length) return false;
-    const last = messages[messages.length - 1];
-    return last.sender === 'ai' && last.type === 'quiz_question';
-  };
-
   // Unified message sending logic
-  const sendMessage = async (formData, isQuiz = false, userText = '') => {
+  const sendMessage = async (formData) => {
     setLoading(true);
     try {
       const res = await fetchWithAuth(
@@ -65,50 +58,53 @@ function AppInner() {
         setJwt,
         logout
       );
+
       const data = await res.json();
+
       if (data.message_type === 'quiz_lock') {
-        alert(data.response || 'Please answer the current quiz question first.');
-        setLoading(false);
+        alert(data.response);
         return false;
       }
+
       setMessages(msgs => [
         ...msgs,
-        ...(isQuiz ? [{ sender: 'user', text: userText }] : []),
         { sender: 'ai', text: data.response, type: data.message_type }
       ]);
+
       return true;
-    } catch {
-      setMessages(msgs => [...msgs, { sender: 'ai', text: isQuiz ? 'Quiz failed.' : 'Server error.' }]);
-      return false;
     } finally {
-      setInput('');
-      setImage(null);
       setLoading(false);
     }
   };
 
   const handleSend = async () => {
     if (!input.trim() && !image) return;
+
+    setMessages(msgs => [...msgs, { sender: 'user', text: input }]);
+
     const formData = new FormData();
     formData.append('session_id', selectedSession);
     if (input.trim()) formData.append('message', input);
     if (image) formData.append('file', image);
-    setMessages(msgs => [...msgs, { sender: 'user', text: input }]);
-    await sendMessage(formData, false);
+
+    await sendMessage(formData);
   };
 
   const handleQuizClick = async () => {
-    if (!selectedSession || loading) return;
-    if (hasUnansweredQuiz()) {
-      alert('Please answer the current quiz question first.');
-      return;
-    }
+    if (loading) return;
+
+    // Optimistically add "Quiz Me!" first
     setMessages(msgs => [...msgs, { sender: 'user', text: 'Quiz Me!' }]);
+
     const formData = new FormData();
-    formData.append('message', '');
     formData.append('session_id', selectedSession);
     formData.append('action', 'quiz');
-    await sendMessage(formData, false); // Don't add user message again in sendMessage
+
+    const ok = await sendMessage(formData);
+
+    if (!ok) {
+      setMessages(msgs => msgs.slice(0, -1));
+    }
   };
 
   const handleNewChat = async () => {
